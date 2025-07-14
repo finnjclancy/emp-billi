@@ -98,11 +98,11 @@ async def send_detailed_price(update, context):
     await update.message.reply_text(text)
 
 async def handle_wen_commands(update, context):
-    if update.message.text.startswith("/") and "wen" in update.message.text.lower():
+    if "/" in update.message.text and "wen" in update.message.text.lower():
         await update.message.reply_text("next week")
 
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("billi", send_price))
 app.add_handler(CommandHandler("price", send_detailed_price))
-app.add_handler(MessageHandler(filters.COMMAND, handle_wen_commands))
+app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
 app.run_polling()
