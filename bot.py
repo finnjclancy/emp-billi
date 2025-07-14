@@ -1,4 +1,4 @@
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 import requests
 import dotenv
 import os
@@ -44,6 +44,12 @@ async def send_price(update, context):
     with open(IMAGE_PATH, "rb") as img:
         await update.message.reply_photo(photo=img, caption=text)
 
+async def handle_wen_commands(update, context):
+    if update.message.text.startswith("/") and "wen" in update.message.text.lower():
+        await update.message.reply_text("next week")
+
+
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("billi", send_price))
+app.add_handler(MessageHandler(filters.COMMAND, handle_wen_commands))
 app.run_polling()
