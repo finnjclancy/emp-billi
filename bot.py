@@ -200,43 +200,75 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
             emp_amount_for_calc = emp_out if is_buy else emp_in
             portfolio_impact = calculate_portfolio_impact(sender, emp_amount_for_calc, is_buy)
         
-        # Calculate USD values
+        # Calculate USD values and emojis
         if direction == "🔴 SELL":
             emp_usd_value = emp_in * emp_usd_price
             eth_usd_value = eth_out * eth_usd_price
+            total_usd = emp_usd_value
+            
+            # Calculate emojis for sell (🍆🍌 alternating)
+            emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0))
+            sell_emojis = ""
+            for i in range(emoji_count):
+                if i % 2 == 0:
+                    sell_emojis += "🍆"
+                else:
+                    sell_emojis += "🍌"
             
             portfolio_text = f"\n📊 **Portfolio Impact:** {portfolio_impact}" if portfolio_impact else ""
+            price_per_emp = emp_usd_price
             
             message = (
-                f"🔴 **{action} $EMP**\n\n"
-                f"💰 **{emp_in:.3f} $EMP** (${emp_usd_value:.2f})\n"
-                f"⬇️ **for {eth_out:.4f} $ETH** (${eth_usd_value:.2f})\n\n"
-                f"👤 **Wallet:** `{sender[:6]}...{sender[-4:]}`{portfolio_text}\n\n"
-                f"🔗 **TX:** [View on Etherscan](https://etherscan.io/tx/{tx_hash})\n\n"
+                f"🔴 **SOLD $EMP**\n\n"
+                f"{sell_emojis}\n\n"
+                f"💰 **${total_usd:.2f}**\n"
+                f"💎 **{emp_in:.3f} $EMP**\n"
+                f"💵 **${price_per_emp:.2f} per EMP**\n\n"
+                f"📊 **Portfolio Impact:**\n"
+                f"{portfolio_impact if portfolio_impact else 'Unable to calculate'}\n\n"
+                f"👤 **Wallet:** [View Wallet](https://etherscan.io/address/{sender})\n"
+                f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
                 f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
         elif direction == "🟢 BUY":
             eth_usd_value = eth_in * eth_usd_price
             emp_usd_value = emp_out * emp_usd_price
+            total_usd = eth_usd_value
+            
+            # Calculate emojis for buy (🍑🍒 alternating)
+            emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0))
+            buy_emojis = ""
+            for i in range(emoji_count):
+                if i % 2 == 0:
+                    buy_emojis += "🍑"
+                else:
+                    buy_emojis += "🍒"
             
             portfolio_text = f"\n📊 **Portfolio Impact:** {portfolio_impact}" if portfolio_impact else ""
+            price_per_emp = emp_usd_price
             
             message = (
-                f"🟢 **{action} $EMP**\n\n"
-                f"💰 **{eth_in:.4f} $ETH** (${eth_usd_value:.2f})\n"
-                f"⬆️ **for {emp_out:.3f} $EMP** (${emp_usd_value:.2f})\n\n"
-                f"👤 **Wallet:** `{sender[:6]}...{sender[-4:]}`{portfolio_text}\n\n"
-                f"🔗 **TX:** [View on Etherscan](https://etherscan.io/tx/{tx_hash})\n\n"
+                f"🟢 **BOUGHT $EMP**\n\n"
+                f"{buy_emojis}\n\n"
+                f"💰 **${total_usd:.2f}**\n"
+                f"💎 **{emp_out:.3f} $EMP**\n"
+                f"💵 **${price_per_emp:.2f} per EMP**\n\n"
+                f"📊 **Portfolio Impact:**\n"
+                f"{portfolio_impact if portfolio_impact else 'Unable to calculate'}\n\n"
+                f"👤 **Wallet:** [View Wallet](https://etherscan.io/address/{sender})\n"
+                f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
                 f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
         else:
             message = (
                 f"🔄 **SWAP DETECTED**\n\n"
                 f"💎 **Amounts:** {emp_amount:.3f} EMP / {eth_amount:.4f} ETH\n"
-                f"👤 **Wallet:** `{sender[:6]}...{sender[-4:]}`\n"
-                f"🔗 **TX:** [View on Etherscan](https://etherscan.io/tx/{tx_hash})\n\n"
+                f"👤 **Wallet:** [View Wallet](https://etherscan.io/address/{sender})\n"
+                f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
                 f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
+        
+        return message, direction
         
         return message
         
@@ -298,18 +330,45 @@ async def monitor_transactions(bot):
                                 tx_details = get_transaction_details(tx_hash)
                                 
                                 # Format and send message
-                                message = format_swap_message(event, tx_hash, tx_details)
+                                message_result = format_swap_message(event, tx_hash, tx_details)
+                                
+                                if isinstance(message_result, tuple):
+                                    message, direction = message_result
+                                else:
+                                    message = message_result
+                                    direction = "🔄 SWAP"
                                 
                                 try:
-                                    await bot.send_message(
-                                        chat_id=monitoring_group_id,
-                                        text=message,
-                                        parse_mode='Markdown',
-                                        disable_web_page_preview=True
-                                    )
-                                    print(f"Posted transaction: {tx_hash}")
+                                    # Choose image based on direction
+                                    if direction == "🟢 BUY":
+                                        image_path = "buy.jpg"  # Use buy-specific image
+                                    elif direction == "🔴 SELL":
+                                        image_path = "sold.jpg"  # Use sell-specific image
+                                    else:
+                                        image_path = "logo.jpg"  # Default image
+                                    
+                                    # Send message with image
+                                    with open(image_path, "rb") as img:
+                                        await bot.send_photo(
+                                            chat_id=monitoring_group_id,
+                                            photo=img,
+                                            caption=message,
+                                            parse_mode='Markdown'
+                                        )
+                                    print(f"Posted transaction with image: {tx_hash}")
                                 except Exception as e:
-                                    print(f"Error sending message: {e}")
+                                    print(f"Error sending message with image: {e}")
+                                    # Fallback to text-only if image fails
+                                    try:
+                                        await bot.send_message(
+                                            chat_id=monitoring_group_id,
+                                            text=message,
+                                            parse_mode='Markdown',
+                                            disable_web_page_preview=True
+                                        )
+                                        print(f"Posted transaction (text-only): {tx_hash}")
+                                    except Exception as e2:
+                                        print(f"Error sending text-only message: {e2}")
                                 
                                 # Small delay to avoid rate limits
                                 await asyncio.sleep(1)
@@ -602,8 +661,7 @@ async def send_detailed_price(update, context):
             f"📊 market cap: ${format_number(coin_data['market_cap'])}\n"
             f"🏆 rank: #{coin_data['market_cap_rank']}\n"
             f"📈 24h volume: ${format_number(coin_data['total_volume'])}\n\n"
-            
-            f"(this is absolutely financial advice)"
+            f"(financial advice)"
         )
 
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
@@ -769,7 +827,6 @@ async def send_performance_comparison(update, context):
         f"📊 EMP vs Others:\n"
         f"💎 EMP vs ₿ Bitcoin: {format_percent(emp_vs_btc)}\n"
         f"💎 EMP vs Ξ Ethereum: {format_percent(emp_vs_eth)}\n\n"
-        f"💎 $EMP to $27"
     )
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
