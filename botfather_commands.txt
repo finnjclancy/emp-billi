@@ -1,0 +1,10 @@
+billi - Get $EMP price update with logo and target price
+price - Get detailed $EMP price with market data and 24h changes
+empprice - Get simple $EMP price
+btcprice - Get Bitcoin price
+ethprice - Get Ethereum price
+performance - Compare $EMP, BTC, and ETH 24h performance
+startmonitor - Start monitoring Uniswap transactions in this group
+stopmonitor - Stop transaction monitoring
+status - Check monitoring status and configuration
+test - Test blockchain connection and pool contract 
