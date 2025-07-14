@@ -219,7 +219,7 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
             price_per_emp = emp_usd_price
             
             message = (
-                f"🔴 **SOLD $EMP**\n\n"
+                f"🔴 **SOLD $EMP** 🔴\n\n"
                 f"{sell_emojis}\n\n"
                 f"💰 **${total_usd:.2f}**\n"
                 f"💎 **{emp_in:.3f} $EMP**\n"
@@ -248,7 +248,7 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
             price_per_emp = emp_usd_price
             
             message = (
-                f"🟢 **BOUGHT $EMP**\n\n"
+                f"🟢 **BOUGHT $EMP** 🟢\n\n"
                 f"{buy_emojis}\n\n"
                 f"💰 **${total_usd:.2f}**\n"
                 f"💎 **{emp_out:.3f} $EMP**\n"
