@@ -21,6 +21,9 @@ def get_price(symbol):
 def get_return(current, target):
     return ((target - current) / current) * 100
 
+def format_percentage(value):
+    return f"{value:,.2f}"
+
 async def send_price(update, context):
     price = get_price(SYMBOL)
     if price is None:
@@ -33,7 +36,7 @@ async def send_price(update, context):
         f"$EMP Price Update:\n\n"
         f"🐻 bearish at ${price:.2f}\n"
         f"💰 price next week: ${TARGET_PRICE:.2f}\n"
-        f"📈 predicted return: {ret:.2f}%\n"
+        f"📈 predicted return: {format_percentage(ret)}%\n"
         f"👨 performance secured by Jpow\n\n"
         f"(not financial advice)"
     )
