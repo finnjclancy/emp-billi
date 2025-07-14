@@ -22,7 +22,7 @@ def get_return(current, target):
     return ((target - current) / current) * 100
 
 def format_percentage(value):
-    return f"{value:,.2f}"
+    return f"{value:,.0f}"
 
 async def send_price(update, context):
     price = get_price(SYMBOL)
@@ -35,10 +35,10 @@ async def send_price(update, context):
     text = (
         f"$EMP Price Update:\n\n"
         f"🐻 bearish at ${price:.2f}\n"
-        f"💰 price next week: ${TARGET_PRICE:.2f}\n"
+        f"💰 price next week: ${TARGET_PRICE}\n"
         f"📈 predicted return: {format_percentage(ret)}%\n"
         f"👨 performance secured by Jpow\n\n"
-        f"(not financial advice)"
+        f"(financial advice)"
     )
 
     with open(IMAGE_PATH, "rb") as img:
