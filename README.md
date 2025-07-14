@@ -16,7 +16,7 @@ responds with:<br>
 <br>
 
 #### **2) "/wen will ...  "** <br>
-bot replies with next week regardless of what you say<br>
+if you type **"/"** and the word **"wen"** in the same sentence, billi replies with 'next week' regardless of what you say<br>
 <img width="519" height="574" alt="image" src="https://github.com/user-attachments/assets/5bde9f57-ece6-4753-8fad-2ff3787906a2" />
 
 
