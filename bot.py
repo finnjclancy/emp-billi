@@ -139,6 +139,87 @@ async def handle_wen_commands(update, context):
     if "/" in update.message.text and "wen" in update.message.text.lower():
         await context.bot.send_message(chat_id=update.effective_chat.id, text="next week")
 
+async def send_emp_price(update, context):
+    # Get EMP price in one API call
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "ids": "empyreal"
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 429:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
+            return
+            
+        data = response.json()
+        if not data:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP price.")
+            return
+        
+        price = data[0]["current_price"]
+        text = f"💎 $EMP: ${price:,.2f}"
+        
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    except Exception as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Error fetching EMP price.")
+        return
+
+async def send_btc_price(update, context):
+    # Get BTC price in one API call
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "ids": "bitcoin"
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 429:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
+            return
+            
+        data = response.json()
+        if not data:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch BTC price.")
+            return
+        
+        price = data[0]["current_price"]
+        text = f"₿ Bitcoin: ${price:,.2f}"
+        
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    except Exception as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Error fetching BTC price.")
+        return
+
+async def send_eth_price(update, context):
+    # Get ETH price in one API call
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "ids": "ethereum"
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 429:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
+            return
+            
+        data = response.json()
+        if not data:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch ETH price.")
+            return
+        
+        price = data[0]["current_price"]
+        text = f"Ξ Ethereum: ${price:,.2f}"
+        
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    except Exception as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Error fetching ETH price.")
+        return
+
 async def send_performance_comparison(update, context):
     # Get data for all three coins in one API call
     url = "https://api.coingecko.com/api/v3/coins/markets"
@@ -220,6 +301,9 @@ async def send_performance_comparison(update, context):
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("billi", send_price))
 app.add_handler(CommandHandler("price", send_detailed_price))
+app.add_handler(CommandHandler("empprice", send_emp_price))
+app.add_handler(CommandHandler("btcprice", send_btc_price))
+app.add_handler(CommandHandler("ethprice", send_eth_price))
 app.add_handler(CommandHandler("performance", send_performance_comparison))
 app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
 app.run_polling()
