@@ -2,11 +2,11 @@
 
 telegram bot that shows price and next week return for Empyreal ($EMP) 
 
-x account for @empyreal <br>
-https://x.com/@empyrealSDK
+x account for @empyreal: <br>
+**https://x.com/@empyrealSDK**
 
-join group chat:<br>
-https://t.me/+VuZJY5HO3wFjNTYx 
+join the telegram group chat:<br>
+**https://t.me/+VuZJY5HO3wFjNTYx**
 
 ## commands:
 #### **1) "/billi"** <br>
