@@ -10,7 +10,7 @@ https://t.me/+VuZJY5HO3wFjNTYx
 
 ## commands:
 /billi
-responds with:
+responds with: \n
 <img width="519" height="482" alt="image" src="https://github.com/user-attachments/assets/3f97b470-a93a-46e8-b3a4-b22f4ccc1e28" />
 
 
