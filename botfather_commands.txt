@@ -7,4 +7,5 @@ performance - Compare $EMP, BTC, and ETH 24h performance
 startmonitor - Start monitoring Uniswap transactions in this group
 stopmonitor - Stop transaction monitoring
 status - Check monitoring status and configuration
-test - Test blockchain connection and pool contract 
+test - Test blockchain connection and pool contract
+last5 - Show last 5 buy/sell transactions with summary 

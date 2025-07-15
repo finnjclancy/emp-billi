@@ -130,6 +130,198 @@ def calculate_portfolio_impact(wallet_address, emp_amount, is_buy):
         print(f"Error calculating portfolio impact: {e}")
         return None
 
+def get_last_5_transactions():
+    """Get the last 5 buy/sell transactions from the Uniswap pool"""
+    if not w3 or not ETHERSCAN_API_KEY:
+        return None
+    
+    try:
+        # Create contract instance
+        pool_contract = w3.eth.contract(
+            address=Web3.to_checksum_address(UNISWAP_POOL_ADDRESS),
+            abi=UNISWAP_POOL_ABI
+        )
+        
+        # Get latest block
+        latest_block = w3.eth.block_number
+        
+        # Search for recent events (go back more blocks to ensure we get enough)
+        search_blocks = 5000  # Search last 5000 blocks
+        from_block = latest_block - search_blocks
+        
+        # Get swap events
+        swap_events = pool_contract.events.Swap.get_logs(
+            fromBlock=from_block,
+            toBlock=latest_block
+        )
+        
+        # Sort by block number (newest first)
+        sorted_events = sorted(swap_events, key=lambda x: x['blockNumber'], reverse=True)
+        
+        # Filter for buy/sell transactions only
+        buy_sell_events = []
+        for event in sorted_events:
+            amount0 = event["args"]["amount0"]
+            amount1 = event["args"]["amount1"]
+            
+            # Check if it's a buy (ETH -> EMP) or sell (EMP -> ETH)
+            if (amount0 < 0 and amount1 > 0) or (amount0 > 0 and amount1 < 0):
+                buy_sell_events.append(event)
+                if len(buy_sell_events) >= 5:  # Stop after finding 5
+                    break
+        
+        return buy_sell_events[:5]
+        
+    except Exception as e:
+        print(f"Error fetching recent transactions: {e}")
+        return None
+
+def format_last_5_transactions(transactions):
+    """Format the last 5 transactions into a readable message"""
+    if not transactions:
+        return "❌ No recent buy/sell transactions found."
+    
+    # Get current prices for USD conversion
+    try:
+        emp_price_url = "https://api.coingecko.com/api/v3/simple/price?ids=empyreal&vs_currencies=usd"
+        emp_response = requests.get(emp_price_url)
+        if emp_response.status_code == 200:
+            emp_data = emp_response.json()
+            emp_usd_price = emp_data.get("empyreal", {}).get("usd", 0)
+        else:
+            emp_usd_price = 0
+    except:
+        emp_usd_price = 0
+    
+    try:
+        eth_price_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+        eth_response = requests.get(eth_price_url)
+        if eth_response.status_code == 200:
+            eth_data = eth_response.json()
+            eth_usd_price = eth_data.get("ethereum", {}).get("usd", 0)
+        else:
+            eth_usd_price = 0
+    except:
+        eth_usd_price = 0
+    
+    # Process each transaction
+    transaction_details = []
+    total_bought = 0
+    total_sold = 0
+    buy_count = 0
+    sell_count = 0
+    
+    for event in transactions:
+        try:
+            # Extract data
+            sender = event["args"]["sender"]
+            amount0 = event["args"]["amount0"]
+            amount1 = event["args"]["amount1"]
+            tx_hash = event["transactionHash"].hex()
+            block_number = event["blockNumber"]
+            
+            # Get block timestamp
+            try:
+                block = w3.eth.get_block(block_number)
+                timestamp = datetime.fromtimestamp(block.timestamp)
+            except:
+                timestamp = datetime.now()
+            
+            # Convert amounts
+            emp_amount = abs(amount0) / (10 ** 18)
+            eth_amount = abs(amount1) / (10 ** 18)
+            
+            # Determine direction
+            if amount0 > 0 and amount1 < 0:
+                # SELL EMP
+                direction = "🔴 SOLD $EMP"
+                action_emojis = ""
+                usd_value = emp_amount * emp_usd_price
+                emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0))
+                for i in range(emoji_count):
+                    if i % 2 == 0:
+                        action_emojis += "🍆"
+                    else:
+                        action_emojis += "🍌"
+                
+                total_sold += usd_value
+                sell_count += 1
+                
+                # Get portfolio impact
+                portfolio_impact = calculate_portfolio_impact(sender, emp_amount, False)
+                
+                detail = (
+                    f"{direction}\n\n"
+                    f"{action_emojis}\n\n"
+                    f"💰 ${usd_value:.2f}\n"
+                    f"💎 {emp_amount:.3f} $EMP\n"
+                    f"📊 Portfolio:\n"
+                    f"{portfolio_impact if portfolio_impact else 'Unable to calculate'}\n"
+                    f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
+                )
+                
+            elif amount0 < 0 and amount1 > 0:
+                # BUY EMP
+                direction = "🟢 BOUGHT $EMP"
+                action_emojis = ""
+                usd_value = eth_amount * eth_usd_price
+                emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0))
+                for i in range(emoji_count):
+                    if i % 2 == 0:
+                        action_emojis += "🍑"
+                    else:
+                        action_emojis += "🍒"
+                
+                total_bought += usd_value
+                buy_count += 1
+                
+                # Get portfolio impact
+                portfolio_impact = calculate_portfolio_impact(sender, emp_amount, True)
+                
+                detail = (
+                    f"{direction}\n\n"
+                    f"{action_emojis}\n\n"
+                    f"💰 ${usd_value:.2f}\n"
+                    f"💎 {emp_amount:.3f} $EMP\n"
+                    f"📊 Portfolio:\n"
+                    f"{portfolio_impact if portfolio_impact else 'Unable to calculate'}\n"
+                    f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
+                )
+            
+            transaction_details.append(detail)
+            
+        except Exception as e:
+            print(f"Error processing transaction: {e}")
+            continue
+    
+    # Calculate summary
+    total_transactions = buy_count + sell_count
+    buy_percentage = (buy_count / total_transactions * 100) if total_transactions > 0 else 0
+    net_buying = total_bought - total_sold
+    total_volume = total_bought + total_sold
+    
+    # Create summary
+    summary = (
+        f"📊 **LAST 5 TRANSACTIONS SUMMARY**\n\n"
+        f"🟢 **{buy_count} Buys** ({buy_percentage:.1f}%)\n"
+        f"🔴 **{sell_count} Sells** ({100-buy_percentage:.1f}%)\n\n"
+        f"💰 **${total_bought:,.0f} Bought**\n"
+        f"💰 **${total_sold:,.0f} Sold**\n"
+        f"📈 **${net_buying:+,.0f} Net Buying** ({'+' if net_buying >= 0 else ''}${net_buying:,.0f})\n"
+        f"📊 **${total_volume:,.0f} Total Volume**\n"
+    )
+    
+    # Combine all details with numbered transactions
+    numbered_details = []
+    for i, detail in enumerate(transaction_details, 1):
+        numbered_details.append(f"**Transaction {i}:**\n{detail}")
+    
+    full_message = "\n\n----------------------\n\n".join(numbered_details) + "\n\n----------------------\n\n" + summary
+    
+    return full_message
+
 def format_swap_message(swap_event, tx_hash, tx_details=None):
     """Format a swap event into a readable message"""
     try:
@@ -388,6 +580,40 @@ async def monitor_transactions(bot):
                 
     except Exception as e:
         print(f"Error initializing transaction monitoring: {e}")
+
+async def show_last_5_transactions(update, context):
+    """Command to show last 5 buy/sell transactions"""
+    if not w3:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ Web3 not configured. Please set INFURA_URL in .env file"
+        )
+        return
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="🔍 Fetching last 5 buy/sell transactions..."
+    )
+    
+    # Get recent transactions
+    transactions = get_last_5_transactions()
+    
+    if not transactions:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ No recent buy/sell transactions found or error fetching data."
+        )
+        return
+    
+    # Format the message
+    message = format_last_5_transactions(transactions)
+    
+    # Send the message
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=message,
+        parse_mode='Markdown'
+    )
 
 async def start_monitoring(update, context):
     """Command to start transaction monitoring"""
@@ -842,6 +1068,7 @@ app.add_handler(CommandHandler("startmonitor", start_monitoring))
 app.add_handler(CommandHandler("stopmonitor", stop_monitoring))
 app.add_handler(CommandHandler("status", check_status))
 app.add_handler(CommandHandler("test", test_connection))
+app.add_handler(CommandHandler("last5", show_last_5_transactions))
 app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
 
 # Don't auto-start monitoring - wait for /startmonitor command
