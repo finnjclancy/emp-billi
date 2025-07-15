@@ -179,7 +179,7 @@ def format_last_5_transactions(transactions):
                 # SELL EMP
                 direction = "🔴 SOLD $EMP"
                 action_emojis = ""
-                usd_value = emp_amount * emp_usd_price
+                usd_value = eth_amount * eth_usd_price  # Use ETH amount for USD value
                 eth_value = eth_amount * eth_usd_price
                 emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0))
                 for i in range(emoji_count):
@@ -450,37 +450,37 @@ async def monitor_transactions(bot):
                                     message = message_result
                                     direction = "🔄 SWAP"
                                 
-                                try:
-                                    # Choose image based on direction
-                                    if direction == "🟢 BUY":
-                                        image_path = "buy.jpg"  # Use buy-specific image
-                                    elif direction == "🔴 SELL":
-                                        image_path = "sold.jpg"  # Use sell-specific image
-                                    else:
-                                        image_path = "logo.jpg"  # Default image
-                                    
-                                    # Send message with image
-                                    with open(image_path, "rb") as img:
-                                        await bot.send_photo(
-                                            chat_id=monitoring_group_id,
-                                            photo=img,
-                                            caption=message,
-                                            parse_mode='Markdown'
-                                        )
-                                    print(f"Posted transaction with image: {tx_hash}")
-                                except Exception as e:
-                                    print(f"Error sending message with image: {e}")
-                                    # Fallback to text-only if image fails
+                                # Only process SELL transactions (skip BUY transactions)
+                                if direction == "🔴 SELL":
                                     try:
-                                        await bot.send_message(
-                                            chat_id=monitoring_group_id,
-                                            text=message,
-                                            parse_mode='Markdown',
-                                            disable_web_page_preview=True
-                                        )
-                                        print(f"Posted transaction (text-only): {tx_hash}")
-                                    except Exception as e2:
-                                        print(f"Error sending text-only message: {e2}")
+                                        # Use sell-specific image
+                                        image_path = "sold.jpg"
+                                        
+                                        # Send message with image
+                                        with open(image_path, "rb") as img:
+                                            await bot.send_photo(
+                                                chat_id=monitoring_group_id,
+                                                photo=img,
+                                                caption=message,
+                                                parse_mode='Markdown'
+                                            )
+                                        print(f"Posted SELL transaction with image: {tx_hash}")
+                                    except Exception as e:
+                                        print(f"Error sending message with image: {e}")
+                                        # Fallback to text-only if image fails
+                                        try:
+                                            await bot.send_message(
+                                                chat_id=monitoring_group_id,
+                                                text=message,
+                                                parse_mode='Markdown',
+                                                disable_web_page_preview=True
+                                            )
+                                            print(f"Posted SELL transaction (text-only): {tx_hash}")
+                                        except Exception as e2:
+                                            print(f"Error sending text-only message: {e2}")
+                                # else:
+                                #     # BUY transactions are commented out - only monitoring SELL orders
+                                #     print(f"Skipping BUY transaction: {tx_hash}")
                                 
                                 # Small delay to avoid rate limits
                                 await asyncio.sleep(1)
