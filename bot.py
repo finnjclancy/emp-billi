@@ -71,64 +71,7 @@ def get_transaction_details(tx_hash):
     
     return None
 
-def get_wallet_emp_balance(wallet_address):
-    """Get wallet's current EMP balance"""
-    if not ETHERSCAN_API_KEY:
-        return None
-    
-    # EMP token contract address
-    EMP_TOKEN_ADDRESS = "0x39D5313C3750140E5042887413bA8AA6145a9bd2"
-    
-    url = f"https://api.etherscan.io/api"
-    params = {
-        "module": "account",
-        "action": "tokenbalance",
-        "contractaddress": EMP_TOKEN_ADDRESS,
-        "address": wallet_address,
-        "tag": "latest",
-        "apikey": ETHERSCAN_API_KEY
-    }
-    
-    try:
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("result") and data["result"] != "Error":
-                balance_wei = int(data["result"])
-                balance_emp = balance_wei / (10 ** 18)  # EMP has 18 decimals
-                return balance_emp
-    except Exception as e:
-        print(f"Error fetching wallet balance: {e}")
-    
-    return None
 
-def calculate_portfolio_impact(wallet_address, emp_amount, is_buy):
-    """Calculate the percentage impact on wallet's EMP portfolio"""
-    try:
-        current_balance = get_wallet_emp_balance(wallet_address)
-        if current_balance is None:
-            return None
-        
-        if is_buy:
-            # For buy: previous_balance = current_balance - emp_bought
-            previous_balance = current_balance - emp_amount
-            if previous_balance <= 0:
-                return "New EMP holder! 🎉"
-            percentage_change = (emp_amount / previous_balance) * 100
-            return f"+{percentage_change:.1f}% (was {previous_balance:.1f} EMP, now {current_balance:.1f} EMP)"
-        else:
-            # For sell: previous_balance = current_balance + emp_sold
-            previous_balance = current_balance + emp_amount
-            if previous_balance <= 0:
-                return "Error calculating impact"
-            percentage_change = (emp_amount / previous_balance) * 100
-            if current_balance <= 0:
-                return f"Sold entire EMP position! (-{percentage_change:.1f}%)"
-            return f"-{percentage_change:.1f}% (was {previous_balance:.1f} EMP, now {current_balance:.1f} EMP)"
-            
-    except Exception as e:
-        print(f"Error calculating portfolio impact: {e}")
-        return None
 
 def get_last_5_transactions():
     """Get the last 5 buy/sell transactions from the Uniswap pool"""
@@ -237,6 +180,7 @@ def format_last_5_transactions(transactions):
                 direction = "🔴 SOLD $EMP"
                 action_emojis = ""
                 usd_value = emp_amount * emp_usd_price
+                eth_value = eth_amount * eth_usd_price
                 emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0))
                 for i in range(emoji_count):
                     if i % 2 == 0:
@@ -247,16 +191,11 @@ def format_last_5_transactions(transactions):
                 total_sold += usd_value
                 sell_count += 1
                 
-                # Get portfolio impact
-                portfolio_impact = calculate_portfolio_impact(sender, emp_amount, False)
-                
                 detail = (
                     f"{direction}\n\n"
                     f"{action_emojis}\n\n"
-                    f"💰 ${usd_value:.2f}\n"
+                    f"💰 ${usd_value:.2f} ({eth_amount:.2f} ETH)\n"
                     f"💎 {emp_amount:.3f} $EMP\n"
-                    f"📊 Portfolio:\n"
-                    f"{portfolio_impact if portfolio_impact else 'Unable to calculate'}\n"
                     f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
                 )
@@ -276,16 +215,11 @@ def format_last_5_transactions(transactions):
                 total_bought += usd_value
                 buy_count += 1
                 
-                # Get portfolio impact
-                portfolio_impact = calculate_portfolio_impact(sender, emp_amount, True)
-                
                 detail = (
                     f"{direction}\n\n"
                     f"{action_emojis}\n\n"
-                    f"💰 ${usd_value:.2f}\n"
+                    f"💰 ${usd_value:.2f} ({eth_amount:.2f} ETH)\n"
                     f"💎 {emp_amount:.3f} $EMP\n"
-                    f"📊 Portfolio:\n"
-                    f"{portfolio_impact if portfolio_impact else 'Unable to calculate'}\n"
                     f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
                 )
@@ -385,12 +319,7 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
         except:
             eth_usd_price = 0
         
-        # Calculate portfolio impact
-        portfolio_impact = None
-        if direction in ["🔴 SELL", "🟢 BUY"]:
-            is_buy = (direction == "🟢 BUY")
-            emp_amount_for_calc = emp_out if is_buy else emp_in
-            portfolio_impact = calculate_portfolio_impact(sender, emp_amount_for_calc, is_buy)
+
         
         # Calculate USD values and emojis
         if direction == "🔴 SELL":
@@ -407,18 +336,14 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
                 else:
                     sell_emojis += "🍌"
             
-            portfolio_text = f"\n📊 **Portfolio Impact:** {portfolio_impact}" if portfolio_impact else ""
             price_per_emp = emp_usd_price
             
             message = (
                 f"🔴 **SOLD $EMP** 🔴\n\n"
                 f"{sell_emojis}\n\n"
-                f"💰 **${total_usd:.2f}**\n"
+                f"💰 **${total_usd:.2f} ({eth_out:.2f} ETH)**\n"
                 f"💎 **{emp_in:.3f} $EMP**\n"
                 f"💵 **${price_per_emp:.2f} per EMP**\n\n"
-                f"📊 **Portfolio Impact:**\n"
-                f"{portfolio_impact if portfolio_impact else 'Unable to calculate'}\n\n"
-                f"👤 **Wallet:** [View Wallet](https://etherscan.io/address/{sender})\n"
                 f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
                 f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
@@ -436,26 +361,21 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
                 else:
                     buy_emojis += "🍒"
             
-            portfolio_text = f"\n📊 **Portfolio Impact:** {portfolio_impact}" if portfolio_impact else ""
             price_per_emp = emp_usd_price
             
             message = (
                 f"🟢 **BOUGHT $EMP** 🟢\n\n"
                 f"{buy_emojis}\n\n"
-                f"💰 **${total_usd:.2f}**\n"
+                f"💰 **${total_usd:.2f} ({eth_in:.2f} ETH)**\n"
                 f"💎 **{emp_out:.3f} $EMP**\n"
                 f"💵 **${price_per_emp:.2f} per EMP**\n\n"
-                f"📊 **Portfolio Impact:**\n"
-                f"{portfolio_impact if portfolio_impact else 'Unable to calculate'}\n\n"
-                f"👤 **Wallet:** [View Wallet](https://etherscan.io/address/{sender})\n"
                 f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
                 f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
         else:
             message = (
                 f"🔄 **SWAP DETECTED**\n\n"
-                f"💎 **Amounts:** {emp_amount:.3f} EMP / {eth_amount:.4f} ETH\n"
-                f"👤 **Wallet:** [View Wallet](https://etherscan.io/address/{sender})\n"
+                f"💎 **Amounts:** {emp_amount:.3f} EMP / {eth_amount:.2f} ETH\n"
                 f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
                 f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
