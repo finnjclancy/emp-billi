@@ -60,31 +60,67 @@ def get_cached_prices():
     
     # Return cached prices if still valid
     if current_time - price_cache_timestamp < CACHE_DURATION and price_cache:
-        return price_cache.get("emp_usd_price", 0), price_cache.get("eth_usd_price", 0)
+        emp_price = price_cache.get("emp_usd_price", 0)
+        eth_price = price_cache.get("eth_usd_price", 0)
+        print(f"Using cached prices - EMP: ${emp_price}, ETH: ${eth_price}")
+        return emp_price, eth_price
     
-    # Fetch new prices
+    # Try multiple APIs to get prices
+    emp_usd_price = 0
+    eth_usd_price = 0
+    
+    # Try CoinGecko first
     try:
+        print("Trying CoinGecko API...")
         price_url = "https://api.coingecko.com/api/v3/simple/price?ids=empyreal,ethereum&vs_currencies=usd"
         response = requests.get(price_url, timeout=10)
         if response.status_code == 200:
             data = response.json()
             emp_usd_price = data.get("empyreal", {}).get("usd", 0)
             eth_usd_price = data.get("ethereum", {}).get("usd", 0)
-            
-            # Update cache
-            price_cache = {
-                "emp_usd_price": emp_usd_price,
-                "eth_usd_price": eth_usd_price
-            }
-            price_cache_timestamp = current_time
-            
-            return emp_usd_price, eth_usd_price
+            print(f"CoinGecko prices - EMP: ${emp_usd_price}, ETH: ${eth_usd_price}")
         else:
-            print(f"API error: {response.status_code}")
-            return 0, 0
+            print(f"CoinGecko API error: {response.status_code}")
     except Exception as e:
-        print(f"Error fetching prices: {e}")
-        return 0, 0
+        print(f"CoinGecko API failed: {e}")
+    
+    # If ETH price is still 0, try alternative APIs
+    if eth_usd_price == 0:
+        # Try alternative CoinGecko endpoint
+        try:
+            print("Trying CoinGecko ETH-only API...")
+            eth_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+            eth_response = requests.get(eth_url, timeout=10)
+            if eth_response.status_code == 200:
+                eth_data = eth_response.json()
+                eth_usd_price = eth_data.get("ethereum", {}).get("usd", 0)
+                print(f"CoinGecko ETH-only price: ${eth_usd_price}")
+        except Exception as e:
+            print(f"CoinGecko ETH-only API failed: {e}")
+        
+        # If still no ETH price, try alternative API
+        if eth_usd_price == 0:
+            try:
+                print("Trying alternative API...")
+                # Try a different price API (example: CoinCap)
+                alt_url = "https://api.coincap.io/v2/assets/ethereum"
+                alt_response = requests.get(alt_url, timeout=10)
+                if alt_response.status_code == 200:
+                    alt_data = alt_response.json()
+                    eth_usd_price = float(alt_data.get("data", {}).get("priceUsd", 0))
+                    print(f"Alternative API ETH price: ${eth_usd_price}")
+            except Exception as e:
+                print(f"Alternative API failed: {e}")
+    
+    # Update cache with whatever we got
+    price_cache = {
+        "emp_usd_price": emp_usd_price,
+        "eth_usd_price": eth_usd_price
+    }
+    price_cache_timestamp = current_time
+    
+    print(f"Final prices - EMP: ${emp_usd_price}, ETH: ${eth_usd_price}")
+    return emp_usd_price, eth_usd_price
 
 def get_transaction_details(tx_hash):
     """Get transaction details from Etherscan API"""
@@ -163,28 +199,8 @@ def format_last_5_transactions(transactions):
     if not transactions:
         return "❌ No recent buy/sell transactions found."
     
-    # Get current prices for USD conversion
-    try:
-        emp_price_url = "https://api.coingecko.com/api/v3/simple/price?ids=empyreal&vs_currencies=usd"
-        emp_response = requests.get(emp_price_url)
-        if emp_response.status_code == 200:
-            emp_data = emp_response.json()
-            emp_usd_price = emp_data.get("empyreal", {}).get("usd", 0)
-        else:
-            emp_usd_price = 0
-    except:
-        emp_usd_price = 0
-    
-    try:
-        eth_price_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
-        eth_response = requests.get(eth_price_url)
-        if eth_response.status_code == 200:
-            eth_data = eth_response.json()
-            eth_usd_price = eth_data.get("ethereum", {}).get("usd", 0)
-        else:
-            eth_usd_price = 0
-    except:
-        eth_usd_price = 0
+    # Get current prices using cache to reduce API calls
+    emp_usd_price, eth_usd_price = get_cached_prices()
     
     # Process each transaction
     transaction_details = []
@@ -219,8 +235,15 @@ def format_last_5_transactions(transactions):
                 direction = "🔴 SOLD $EMP"
                 action_emojis = ""
                 usd_value = eth_amount * eth_usd_price  # Use ETH amount for USD value
-                eth_value = eth_amount * eth_usd_price
-                emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0))
+                print(f"Last5 SELL - eth_amount: {eth_amount}, eth_usd_price: ${eth_usd_price}, usd_value: ${usd_value}")
+                
+                # Calculate actual price per EMP from the transaction
+                if emp_amount > 0 and eth_usd_price > 0:
+                    actual_price_per_emp = usd_value / emp_amount
+                else:
+                    actual_price_per_emp = emp_usd_price  # Fallback to current price
+                
+                emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0)) if usd_value > 0 else 1
                 for i in range(emoji_count):
                     if i % 2 == 0:
                         action_emojis += "🍆"
@@ -230,21 +253,41 @@ def format_last_5_transactions(transactions):
                 total_sold += usd_value
                 sell_count += 1
                 
-                detail = (
-                    f"{direction}\n\n"
-                    f"{action_emojis}\n\n"
-                    f"💰 ${usd_value:.2f} ({eth_amount:.2f} ETH)\n"
-                    f"💎 {emp_amount:.3f} $EMP\n"
-                    f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
-                )
+                # Format detail based on whether we have USD prices
+                if eth_usd_price > 0:
+                    detail = (
+                        f"{direction}\n\n"
+                        f"{action_emojis}\n\n"
+                        f"💰 ${usd_value:.2f} ({eth_amount:.2f} ETH)\n"
+                        f"💎 {emp_amount:.3f} $EMP\n"
+                        f"💵 ${actual_price_per_emp:.2f} per EMP\n"
+                        f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
+                    )
+                else:
+                    detail = (
+                        f"{direction}\n\n"
+                        f"{action_emojis}\n\n"
+                        f"💰 {eth_amount:.2f} ETH\n"
+                        f"💎 {emp_amount:.3f} $EMP\n"
+                        f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
+                    )
                 
             elif amount0 < 0 and amount1 > 0:
                 # BUY EMP
                 direction = "🟢 BOUGHT $EMP"
                 action_emojis = ""
                 usd_value = eth_amount * eth_usd_price
-                emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0))
+                print(f"Last5 BUY - eth_amount: {eth_amount}, eth_usd_price: ${eth_usd_price}, usd_value: ${usd_value}")
+                
+                # Calculate actual price per EMP from the transaction
+                if emp_amount > 0 and eth_usd_price > 0:
+                    actual_price_per_emp = usd_value / emp_amount
+                else:
+                    actual_price_per_emp = emp_usd_price  # Fallback to current price
+                
+                emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0)) if usd_value > 0 else 1
                 for i in range(emoji_count):
                     if i % 2 == 0:
                         action_emojis += "🍑"
@@ -254,14 +297,26 @@ def format_last_5_transactions(transactions):
                 total_bought += usd_value
                 buy_count += 1
                 
-                detail = (
-                    f"{direction}\n\n"
-                    f"{action_emojis}\n\n"
-                    f"💰 ${usd_value:.2f} ({eth_amount:.2f} ETH)\n"
-                    f"💎 {emp_amount:.3f} $EMP\n"
-                    f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
-                )
+                # Format detail based on whether we have USD prices
+                if eth_usd_price > 0:
+                    detail = (
+                        f"{direction}\n\n"
+                        f"{action_emojis}\n\n"
+                        f"💰 ${usd_value:.2f} ({eth_amount:.2f} ETH)\n"
+                        f"💎 {emp_amount:.3f} $EMP\n"
+                        f"💵 ${actual_price_per_emp:.2f} per EMP\n"
+                        f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
+                    )
+                else:
+                    detail = (
+                        f"{direction}\n\n"
+                        f"{action_emojis}\n\n"
+                        f"💰 {eth_amount:.2f} ETH\n"
+                        f"💎 {emp_amount:.3f} $EMP\n"
+                        f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"🔗 [View TX](https://etherscan.io/tx/{tx_hash})\n"
+                    )
             
             transaction_details.append(detail)
             
@@ -340,12 +395,20 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
         
         # Calculate USD values and emojis
         if direction == "🔴 SELL":
-            emp_usd_value = emp_in * emp_usd_price
+            # For SELL: Calculate USD value based on ETH received
             eth_usd_value = eth_out * eth_usd_price
-            total_usd = eth_usd_value  # Use ETH value for sell transactions
+            total_usd = eth_usd_value
+            
+            print(f"SELL calculation - eth_out: {eth_out}, eth_usd_price: ${eth_usd_price}, total_usd: ${total_usd}")
+            
+            # Calculate actual price per EMP from the transaction
+            if emp_in > 0 and eth_usd_price > 0:
+                actual_price_per_emp = eth_usd_value / emp_in
+            else:
+                actual_price_per_emp = emp_usd_price  # Fallback to current price
             
             # Calculate emojis for sell (🍆🍌 alternating)
-            emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0))
+            emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0)) if total_usd > 0 else 1
             sell_emojis = ""
             for i in range(emoji_count):
                 if i % 2 == 0:
@@ -353,24 +416,39 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
                 else:
                     sell_emojis += "🍌"
             
-            price_per_emp = emp_usd_price
-            
-            message = (
-                f"🔴 **SOLD $EMP** 🔴\n\n"
-                f"{sell_emojis}\n\n"
-                f"💰 **${total_usd:.2f} ({eth_out:.2f} ETH)**\n"
-                f"💎 **{emp_in:.3f} $EMP**\n"
-                f"💵 **${price_per_emp:.2f} per EMP**\n\n"
-                f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
-                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
+            # Format message based on whether we have USD prices
+            if eth_usd_price > 0:
+                message = (
+                    f"🔴 **SOLD $EMP** 🔴\n\n"
+                    f"{sell_emojis}\n\n"
+                    f"💰 **${total_usd:.2f} ({eth_out:.2f} ETH)**\n"
+                    f"💎 **{emp_in:.3f} $EMP**\n"
+                    f"💵 **${actual_price_per_emp:.2f} per EMP**\n\n"
+                    f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})"
+                )
+            else:
+                message = (
+                    f"🔴 **SOLD $EMP** 🔴\n\n"
+                    f"{sell_emojis}\n\n"
+                    f"💰 **{eth_out:.2f} ETH**\n"
+                    f"💎 **{emp_in:.3f} $EMP**\n\n"
+                    f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})"
+                )
         elif direction == "🟢 BUY":
+            # For BUY: Calculate USD value based on ETH spent
             eth_usd_value = eth_in * eth_usd_price
-            emp_usd_value = emp_out * emp_usd_price
-            total_usd = eth_usd_value  # Use ETH value for buy transactions
+            total_usd = eth_usd_value
+            
+            print(f"BUY calculation - eth_in: {eth_in}, eth_usd_price: ${eth_usd_price}, total_usd: ${total_usd}")
+            
+            # Calculate actual price per EMP from the transaction
+            if emp_out > 0 and eth_usd_price > 0:
+                actual_price_per_emp = eth_usd_value / emp_out
+            else:
+                actual_price_per_emp = emp_usd_price  # Fallback to current price
             
             # Calculate emojis for buy (🍑🍒 alternating)
-            emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0))
+            emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0)) if total_usd > 0 else 1
             buy_emojis = ""
             for i in range(emoji_count):
                 if i % 2 == 0:
@@ -378,23 +456,29 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
                 else:
                     buy_emojis += "🍒"
             
-            price_per_emp = emp_usd_price
-            
-            message = (
-                f"🟢 **BOUGHT $EMP** 🟢\n\n"
-                f"{buy_emojis}\n\n"
-                f"💰 **${total_usd:.2f} ({eth_in:.2f} ETH)**\n"
-                f"💎 **{emp_out:.3f} $EMP**\n"
-                f"💵 **${price_per_emp:.2f} per EMP**\n\n"
-                f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
-                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
+            # Format message based on whether we have USD prices
+            if eth_usd_price > 0:
+                message = (
+                    f"🟢 **BOUGHT $EMP** 🟢\n\n"
+                    f"{buy_emojis}\n\n"
+                    f"💰 **${total_usd:.2f} ({eth_in:.2f} ETH)**\n"
+                    f"💎 **{emp_out:.3f} $EMP**\n"
+                    f"💵 **${actual_price_per_emp:.2f} per EMP**\n\n"
+                    f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})"
+                )
+            else:
+                message = (
+                    f"🟢 **BOUGHT $EMP** 🟢\n\n"
+                    f"{buy_emojis}\n\n"
+                    f"💰 **{eth_in:.2f} ETH**\n"
+                    f"💎 **{emp_out:.3f} $EMP**\n\n"
+                    f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})"
+                )
         else:
             message = (
                 f"🔄 **SWAP DETECTED**\n\n"
                 f"💎 **Amounts:** {emp_amount:.3f} EMP / {eth_amount:.2f} ETH\n"
-                f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})\n\n"
-                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"🔗 **Transaction:** [View TX](https://etherscan.io/tx/{tx_hash})"
             )
         
         return message, direction
@@ -1062,7 +1146,7 @@ async def send_daily_volume(update, context):
         else:
             formatted_volume = f"${volume_24h:.2f}"
         
-        text = f"📊 **Daily Trading Volume**\n\n💎 **$EMP 24h Volume:** {formatted_volume}\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        text = f"💎 **$EMP 24h Volume:** {formatted_volume}"
         
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
     except requests.exceptions.Timeout:
