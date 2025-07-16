@@ -160,18 +160,34 @@ def get_last_5_transactions():
             abi=UNISWAP_POOL_ABI
         )
         
-        # Get latest block
-        latest_block = w3.eth.block_number
+        # Get latest block with rate limiting
+        try:
+            latest_block = w3.eth.block_number
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                print("Rate limited in get_last_5_transactions")
+                return None
+            else:
+                print(f"Error getting block number in get_last_5_transactions: {e}")
+                return None
         
         # Search for recent events (go back more blocks to ensure we get enough)
         search_blocks = 5000  # Search last 5000 blocks
         from_block = latest_block - search_blocks
         
-        # Get swap events
-        swap_events = pool_contract.events.Swap.get_logs(
-            fromBlock=from_block,
-            toBlock=latest_block
-        )
+        # Get swap events with rate limiting
+        try:
+            swap_events = pool_contract.events.Swap.get_logs(
+                fromBlock=from_block,
+                toBlock=latest_block
+            )
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                print("Rate limited while getting swap events")
+                return None
+            else:
+                print(f"Error getting swap events: {e}")
+                return None
         
         # Sort by block number (newest first)
         sorted_events = sorted(swap_events, key=lambda x: x['blockNumber'], reverse=True)
@@ -509,20 +525,44 @@ async def monitor_transactions(bot):
         print(f"Starting transaction monitoring for pool: {UNISWAP_POOL_ADDRESS}")
         print(f"Posting updates to group chat: {monitoring_group_id}")
         
-        # Get latest block
-        latest_block = w3.eth.block_number
-        print(f"Starting from block: {latest_block}")
+        # Get latest block with error handling
+        try:
+            latest_block = w3.eth.block_number
+            print(f"Starting from block: {latest_block}")
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                print("Rate limited during startup, waiting 60 seconds before retrying...")
+                await asyncio.sleep(60)
+                try:
+                    latest_block = w3.eth.block_number
+                    print(f"Retry successful, starting from block: {latest_block}")
+                except Exception as e2:
+                    print(f"Still rate limited: {e2}")
+                    return
+            else:
+                print(f"Error getting initial block number: {e}")
+                return
         
         while True:
             try:
-                # Get new blocks
-                current_block = w3.eth.block_number
+                # Get new blocks with rate limiting
+                try:
+                    current_block = w3.eth.block_number
+                except Exception as e:
+                    if "429" in str(e) or "Too Many Requests" in str(e):
+                        print("Rate limited by Infura, waiting 60 seconds...")
+                        await asyncio.sleep(60)
+                        continue
+                    else:
+                        print(f"Error getting block number: {e}")
+                        await asyncio.sleep(30)
+                        continue
                 
                 if current_block > latest_block:
                     # Check for swap events in new blocks
                     for block_num in range(latest_block + 1, current_block + 1):
                         try:
-                            # Get swap events from the block
+                            # Get swap events from the block with rate limiting
                             swap_events = pool_contract.events.Swap.get_logs(
                                 fromBlock=block_num,
                                 toBlock=block_num
@@ -617,17 +657,22 @@ async def monitor_transactions(bot):
                                     except Exception as e:
                                         print(f"Error sending text-only message: {e}")
                                 
-                                # Small delay to avoid rate limits
-                                await asyncio.sleep(2)
+                                # Small delay to avoid rate limits (increased to reduce API calls)
+                                await asyncio.sleep(5)
                                 
                         except Exception as e:
-                            print(f"Error processing block {block_num}: {e}")
-                            continue
+                            if "429" in str(e) or "Too Many Requests" in str(e):
+                                print(f"Rate limited while processing block {block_num}, waiting 30 seconds...")
+                                await asyncio.sleep(30)
+                                break  # Exit the block processing loop
+                            else:
+                                print(f"Error processing block {block_num}: {e}")
+                                continue
                     
                     latest_block = current_block
                 
-                # Wait before checking for new blocks
-                await asyncio.sleep(15)  # Check every ~15 seconds
+                # Wait before checking for new blocks (increased delay to reduce rate limiting)
+                await asyncio.sleep(30)  # Check every ~30 seconds
                 
             except Exception as e:
                 print(f"Error in transaction monitoring loop: {e}")
