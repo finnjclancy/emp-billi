@@ -47,6 +47,45 @@ UNISWAP_POOL_ABI = [
 # Track processed transactions to avoid duplicates
 processed_transactions = set()
 
+# Simple price cache to reduce API calls
+price_cache = {}
+price_cache_timestamp = 0
+CACHE_DURATION = 60  # Cache prices for 60 seconds
+
+def get_cached_prices():
+    """Get cached prices or fetch new ones if cache is expired"""
+    global price_cache, price_cache_timestamp
+    
+    current_time = time.time()
+    
+    # Return cached prices if still valid
+    if current_time - price_cache_timestamp < CACHE_DURATION and price_cache:
+        return price_cache.get("emp_usd_price", 0), price_cache.get("eth_usd_price", 0)
+    
+    # Fetch new prices
+    try:
+        price_url = "https://api.coingecko.com/api/v3/simple/price?ids=empyreal,ethereum&vs_currencies=usd"
+        response = requests.get(price_url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            emp_usd_price = data.get("empyreal", {}).get("usd", 0)
+            eth_usd_price = data.get("ethereum", {}).get("usd", 0)
+            
+            # Update cache
+            price_cache = {
+                "emp_usd_price": emp_usd_price,
+                "eth_usd_price": eth_usd_price
+            }
+            price_cache_timestamp = current_time
+            
+            return emp_usd_price, eth_usd_price
+        else:
+            print(f"API error: {response.status_code}")
+            return 0, 0
+    except Exception as e:
+        print(f"Error fetching prices: {e}")
+        return 0, 0
+
 def get_transaction_details(tx_hash):
     """Get transaction details from Etherscan API"""
     if not ETHERSCAN_API_KEY:
@@ -273,59 +312,37 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
         emp_amount = abs(amount0) / (10 ** EMP_DECIMALS)
         eth_amount = abs(amount1) / (10 ** ETH_DECIMALS)
         
-        # Determine swap direction
+        # Determine swap direction and initialize variables
         if amount0 > 0 and amount1 < 0:
             # Token0 (EMP) -> Token1 (ETH) = SELL EMP
             direction = "🔴 SELL"
-            action = "SOLD"
             emp_in = emp_amount
             eth_out = eth_amount
+            eth_in = 0
+            emp_out = 0
         elif amount0 < 0 and amount1 > 0:
             # Token1 (ETH) -> Token0 (EMP) = BUY EMP
             direction = "🟢 BUY"
-            action = "BOUGHT"
             eth_in = eth_amount
             emp_out = emp_amount
+            emp_in = 0
+            eth_out = 0
         else:
             # Fallback for other cases
             direction = "🔄 SWAP"
-            action = "SWAPPED"
             emp_in = emp_amount if amount0 > 0 else 0
             eth_out = eth_amount if amount1 > 0 else 0
             eth_in = eth_amount if amount1 < 0 else 0
             emp_out = emp_amount if amount0 < 0 else 0
         
-        # Get current EMP price for USD conversion
-        try:
-            emp_price_url = "https://api.coingecko.com/api/v3/simple/price?ids=empyreal&vs_currencies=usd"
-            emp_response = requests.get(emp_price_url)
-            if emp_response.status_code == 200:
-                emp_data = emp_response.json()
-                emp_usd_price = emp_data.get("empyreal", {}).get("usd", 0)
-            else:
-                emp_usd_price = 0
-        except:
-            emp_usd_price = 0
-        
-        # Get current ETH price for USD conversion
-        try:
-            eth_price_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
-            eth_response = requests.get(eth_price_url)
-            if eth_response.status_code == 200:
-                eth_data = eth_response.json()
-                eth_usd_price = eth_data.get("ethereum", {}).get("usd", 0)
-            else:
-                eth_usd_price = 0
-        except:
-            eth_usd_price = 0
-        
-
+        # Get current prices using cache to reduce API calls
+        emp_usd_price, eth_usd_price = get_cached_prices()
         
         # Calculate USD values and emojis
         if direction == "🔴 SELL":
             emp_usd_value = emp_in * emp_usd_price
             eth_usd_value = eth_out * eth_usd_price
-            total_usd = emp_usd_value
+            total_usd = eth_usd_value  # Use ETH value for sell transactions
             
             # Calculate emojis for sell (🍆🍌 alternating)
             emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0))
@@ -350,7 +367,7 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
         elif direction == "🟢 BUY":
             eth_usd_value = eth_in * eth_usd_price
             emp_usd_value = emp_out * emp_usd_price
-            total_usd = eth_usd_value
+            total_usd = eth_usd_value  # Use ETH value for buy transactions
             
             # Calculate emojis for buy (🍑🍒 alternating)
             emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0))
@@ -382,11 +399,9 @@ def format_swap_message(swap_event, tx_hash, tx_details=None):
         
         return message, direction
         
-        return message
-        
     except Exception as e:
         print(f"Error formatting swap message: {e}")
-        return f"🔄 **New Swap Detected**\n\n🔗 [View Transaction](https://etherscan.io/tx/{tx_hash})"
+        return f"🔄 **New Swap Detected**\n\n🔗 [View Transaction](https://etherscan.io/tx/{tx_hash})", "🔄 SWAP"
 
 async def monitor_transactions(bot):
     """Monitor Uniswap pool for new transactions"""
@@ -519,7 +534,7 @@ async def monitor_transactions(bot):
                                         print(f"Error sending text-only message: {e}")
                                 
                                 # Small delay to avoid rate limits
-                                await asyncio.sleep(1)
+                                await asyncio.sleep(2)
                                 
                         except Exception as e:
                             print(f"Error processing block {block_num}: {e}")
@@ -528,7 +543,7 @@ async def monitor_transactions(bot):
                     latest_block = current_block
                 
                 # Wait before checking for new blocks
-                await asyncio.sleep(12)  # Check every ~12 seconds
+                await asyncio.sleep(15)  # Check every ~15 seconds
                 
             except Exception as e:
                 print(f"Error in transaction monitoring loop: {e}")
@@ -1022,14 +1037,17 @@ async def send_daily_volume(update, context):
     }
     
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=10)
         if response.status_code == 429:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Rate limit exceeded. Please try again in a minute.")
+            return
+        elif response.status_code != 200:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ API error: {response.status_code}. Please try again later.")
             return
             
         data = response.json()
         if not data:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP volume data.")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Could not fetch EMP volume data.")
             return
         
         volume_24h = data[0]["total_volume"]
@@ -1047,8 +1065,12 @@ async def send_daily_volume(update, context):
         text = f"📊 **Daily Trading Volume**\n\n💎 **$EMP 24h Volume:** {formatted_volume}\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
+    except requests.exceptions.Timeout:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⏰ Request timeout. Please try again.")
+        return
     except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Error fetching EMP volume data.")
+        print(f"Error in send_daily_volume: {e}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Error fetching EMP volume data.")
         return
 
 app = ApplicationBuilder().token(TOKEN).build()
