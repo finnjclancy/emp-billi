@@ -450,7 +450,7 @@ async def monitor_transactions(bot):
                                     message = message_result
                                     direction = "🔄 SWAP"
                                 
-                                # Only process SELL transactions (skip BUY transactions)
+                                # Process both BUY and SELL transactions
                                 if direction == "🔴 SELL":
                                     try:
                                         # Use sell-specific image
@@ -478,9 +478,45 @@ async def monitor_transactions(bot):
                                             print(f"Posted SELL transaction (text-only): {tx_hash}")
                                         except Exception as e2:
                                             print(f"Error sending text-only message: {e2}")
-                                # else:
-                                #     # BUY transactions are commented out - only monitoring SELL orders
-                                #     print(f"Skipping BUY transaction: {tx_hash}")
+                                elif direction == "🟢 BUY":
+                                    try:
+                                        # Use buy-specific image
+                                        image_path = "buy.jpg"
+                                        
+                                        # Send message with image
+                                        with open(image_path, "rb") as img:
+                                            await bot.send_photo(
+                                                chat_id=monitoring_group_id,
+                                                photo=img,
+                                                caption=message,
+                                                parse_mode='Markdown'
+                                            )
+                                        print(f"Posted BUY transaction with image: {tx_hash}")
+                                    except Exception as e:
+                                        print(f"Error sending message with image: {e}")
+                                        # Fallback to text-only if image fails
+                                        try:
+                                            await bot.send_message(
+                                                chat_id=monitoring_group_id,
+                                                text=message,
+                                                parse_mode='Markdown',
+                                                disable_web_page_preview=True
+                                            )
+                                            print(f"Posted BUY transaction (text-only): {tx_hash}")
+                                        except Exception as e2:
+                                            print(f"Error sending text-only message: {e2}")
+                                else:
+                                    # For other swap types, send text-only
+                                    try:
+                                        await bot.send_message(
+                                            chat_id=monitoring_group_id,
+                                            text=message,
+                                            parse_mode='Markdown',
+                                            disable_web_page_preview=True
+                                        )
+                                        print(f"Posted SWAP transaction: {tx_hash}")
+                                    except Exception as e:
+                                        print(f"Error sending text-only message: {e}")
                                 
                                 # Small delay to avoid rate limits
                                 await asyncio.sleep(1)
@@ -977,6 +1013,44 @@ async def send_performance_comparison(update, context):
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
 
+async def send_daily_volume(update, context):
+    """Command to show daily trading volume for EMP"""
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "ids": "empyreal"
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 429:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
+            return
+            
+        data = response.json()
+        if not data:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP volume data.")
+            return
+        
+        volume_24h = data[0]["total_volume"]
+        
+        # Format the volume with appropriate units
+        if volume_24h >= 1_000_000_000:
+            formatted_volume = f"${volume_24h/1_000_000_000:.2f}B"
+        elif volume_24h >= 1_000_000:
+            formatted_volume = f"${volume_24h/1_000_000:.2f}M"
+        elif volume_24h >= 1_000:
+            formatted_volume = f"${volume_24h/1_000:.2f}K"
+        else:
+            formatted_volume = f"${volume_24h:.2f}"
+        
+        text = f"📊 **Daily Trading Volume**\n\n💎 **$EMP 24h Volume:** {formatted_volume}\n\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
+    except Exception as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Error fetching EMP volume data.")
+        return
+
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("billi", send_price))
 app.add_handler(CommandHandler("price", send_detailed_price))
@@ -989,6 +1063,7 @@ app.add_handler(CommandHandler("stopmonitor", stop_monitoring))
 app.add_handler(CommandHandler("status", check_status))
 app.add_handler(CommandHandler("test", test_connection))
 app.add_handler(CommandHandler("last5", show_last_5_transactions))
+app.add_handler(CommandHandler("vol", send_daily_volume))
 app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
 
 # Don't auto-start monitoring - wait for /startmonitor command
