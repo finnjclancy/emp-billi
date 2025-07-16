@@ -982,12 +982,11 @@ async def send_detailed_price(update, context):
             f"$EMP price update:\n\n"
             f"💸 currently bearish at: ${price:.2f}\n"
             f"{'🟢' if coin_data['price_change_percentage_24h'] >= 0 else '🔴'} 24h change: ${coin_data['price_change_24h']:.2f} ({coin_data['price_change_percentage_24h']:.2f}%)\n\n"
-            f"🎯 next week target: ${TARGET_PRICE:,}\n"
+            f"🎯 next week price: ${TARGET_PRICE:,}\n"
             f"📈 guaranteed return: {format_percentage(ret)}%\n\n"
             f"📊 market cap: ${format_number(coin_data['market_cap'])}\n"
             f"🏆 rank: #{coin_data['market_cap_rank']}\n"
             f"📈 24h volume: ${format_number(coin_data['total_volume'])}\n\n"
-            f"(financial advice)"
         )
 
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
@@ -1146,11 +1145,11 @@ async def send_performance_comparison(update, context):
         f"₿ Bitcoin: ${coin_data['bitcoin']['price']:,.2f}\n"
         f"Ξ Ethereum: ${coin_data['ethereum']['price']:,.2f}\n"
         f"💎 EMP: ${coin_data['empyreal']['price']:,.2f}\n\n"
-        f"📈 Performance:\n"
+        f"📈 24h Performance:\n"
         f"₿ Bitcoin: ${coin_data['bitcoin']['price_change_24h']:+.2f} ({format_percent(coin_data['bitcoin']['change_24h'])})\n"
         f"Ξ Ethereum: ${coin_data['ethereum']['price_change_24h']:+.2f} ({format_percent(coin_data['ethereum']['change_24h'])})\n"
         f"💎 EMP: ${coin_data['empyreal']['price_change_24h']:+.2f} ({format_percent(coin_data['empyreal']['change_24h'])})\n\n"
-        f"📊 EMP vs Others:\n"
+        f"📊 EMP vs Others:(24h)\n"
         f"💎 EMP vs ₿ Bitcoin: {format_percent(emp_vs_btc)}\n"
         f"💎 EMP vs Ξ Ethereum: {format_percent(emp_vs_eth)}\n\n"
     )
