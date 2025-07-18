@@ -21,8 +21,10 @@ TOKENS = {
     "emp": {
         "name": "Empyreal",
         "symbol": "EMP",
+        "token_address": "0xE9F84dE637E8C5C76c4c85C3C5C5C5C5C5C5C5C5C5",  # EMP token address (placeholder)
         "pool_address": "0xe092769bc1fa5262D4f48353f90890Dcc339BF80",
         "network": "ethereum",
+        "chainid": 1,  # Ethereum chain ID
         "rpc_url": os.getenv("INFURA_URL"),
         "explorer_url": "https://etherscan.io",
         "target_price": 3333,
@@ -33,8 +35,10 @@ TOKENS = {
     "talos": {
         "name": "Talos",
         "symbol": "T",
-        "pool_address": "0xdaAe914e4Bae2AAe4f536006C353117B90Fb37e3",
+        "token_address": "0x30a538eFFD91ACeFb1b12CE9Bc0074eD18c9dFc9",  # Talos token address
+        "pool_address": "0xdaAe914e4Bae2AAe4f536006C353117B90Fb37e3",  # Talos pool address
         "network": "arbitrum",
+        "chainid": 42161,  # Arbitrum chain ID
         "rpc_url": os.getenv("ARBITRUM_RPC_URL"),
         "explorer_url": "https://arbiscan.io",
         "target_price": 1000,  # You can adjust this
@@ -49,75 +53,47 @@ INFURA_URL = os.getenv("INFURA_URL")
 ARBITRUM_RPC_URL = os.getenv("ARBITRUM_RPC_URL")
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY")
 
-# Store the group chat IDs when monitoring starts
-monitoring_groups = {}
-
-# Track monitoring tasks to properly stop them
-monitoring_tasks = {}
-
-# Initialize Web3 connections
-w3_connections = {}
-if INFURA_URL:
-    w3_connections["ethereum"] = Web3(Web3.HTTPProvider(INFURA_URL))
-if ARBITRUM_RPC_URL:
-    w3_connections["arbitrum"] = Web3(Web3.HTTPProvider(ARBITRUM_RPC_URL))
-
-# Uniswap V3 Pool ABI (expanded for different event types)
-UNISWAP_POOL_ABI = [
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "sender", "type": "address"},
-            {"indexed": True, "name": "recipient", "type": "address"},
-            {"indexed": False, "name": "amount0", "type": "int256"},
-            {"indexed": False, "name": "amount1", "type": "int256"},
-            {"indexed": False, "name": "sqrtPriceX96", "type": "uint160"},
-            {"indexed": False, "name": "liquidity", "type": "uint128"},
-            {"indexed": False, "name": "tick", "type": "int24"}
-        ],
-        "name": "Swap",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "owner", "type": "address"},
-            {"indexed": True, "name": "tickLower", "type": "int24"},
-            {"indexed": True, "name": "tickUpper", "type": "int24"},
-            {"indexed": False, "name": "amount", "type": "uint128"},
-            {"indexed": False, "name": "amount0", "type": "uint256"},
-            {"indexed": False, "name": "amount1", "type": "uint256"}
-        ],
-        "name": "Mint",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "owner", "type": "address"},
-            {"indexed": True, "name": "tickLower", "type": "int24"},
-            {"indexed": True, "name": "tickUpper", "type": "int24"},
-            {"indexed": False, "name": "amount", "type": "uint128"},
-            {"indexed": False, "name": "amount0", "type": "uint256"},
-            {"indexed": False, "name": "amount1", "type": "uint256"}
-        ],
-        "name": "Burn",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "sender", "type": "address"},
-            {"indexed": True, "name": "recipient", "type": "address"},
-            {"indexed": False, "name": "amount0", "type": "uint256"},
-            {"indexed": False, "name": "amount1", "type": "uint256"},
-            {"indexed": False, "name": "paid0", "type": "uint256"},
-            {"indexed": False, "name": "paid1", "type": "uint256"}
-        ],
-        "name": "Flash",
-        "type": "event"
+def unified_etherscan_api_call(module, action, chainid=1, **params):
+    """
+    Make a unified Etherscan V2 API call
+    
+    Args:
+        module: API module (e.g., 'proxy', 'logs', 'stats')
+        action: API action (e.g., 'eth_getTransactionByHash', 'getLogs', 'ethprice')
+        chainid: Chain ID (1 for Ethereum, 42161 for Arbitrum, etc.)
+        **params: Additional parameters for the API call
+    
+    Returns:
+        API response data or None if failed
+    """
+    if not ETHERSCAN_API_KEY:
+        print("No Etherscan API key configured")
+        return None
+    
+    url = "https://api.etherscan.io/v2/api"
+    params = {
+        "chainid": chainid,
+        "module": module,
+        "action": action,
+        "apikey": ETHERSCAN_API_KEY,
+        **params
     }
-]
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "1":
+                return data.get("result")
+            else:
+                print(f"Etherscan API Error: {data.get('message', 'Unknown error')}")
+                return None
+        else:
+            print(f"Etherscan API HTTP Error: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"Etherscan API Error: {e}")
+        return None
 
 # Track processed transactions to avoid duplicates (per token)
 processed_transactions = {
@@ -132,34 +108,23 @@ CACHE_DURATION = 60  # Cache prices for 60 seconds
 
 def get_eth_price() -> Optional[tuple[float, float]]:
     """
-    Get current ETH price in USD and BTC using Etherscan API
+    Get current ETH price in USD and BTC using unified Etherscan V2 API
     
     Returns:
         Tuple of (USD price, BTC price) or None if failed
         Example: (3428.49, 0.02876339)
     """
     try:
-        api_key = os.getenv('ETHERSCAN_API_KEY')
-        base_url = "https://api.etherscan.io/api"
+        result = unified_etherscan_api_call(
+            module="stats",
+            action="ethprice",
+            chainid=1  # Use Ethereum for price data
+        )
         
-        params = {
-            'module': 'stats',
-            'action': 'ethprice',
-            'apikey': api_key
-        }
-        
-        response = requests.get(base_url, params=params, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('status') == '1' and data.get('result'):
-                result = data['result']
-                return (float(result['ethusd']), float(result['ethbtc']))
-            else:
-                print(f"ETH Price API Error: {data}")
-                return None
+        if result:
+            return (float(result['ethusd']), float(result['ethbtc']))
         else:
-            print(f"ETH Price API Error: {response.status_code}")
+            print("ETH Price API Error: No result returned")
             return None
             
     except Exception as e:
@@ -341,31 +306,21 @@ def get_cached_prices(token_symbol=None):
         print(f"Final prices - EMP: ${emp_usd_price}, ETH: ${eth_usd_price}")
         return emp_usd_price, eth_usd_price
 
-def get_transaction_details(tx_hash):
-    """Get transaction details from Etherscan API"""
-    if not ETHERSCAN_API_KEY:
+def get_transaction_details(tx_hash, token_key="emp"):
+    """Get transaction details from unified Etherscan V2 API"""
+    token_config = TOKENS.get(token_key)
+    if not token_config:
+        print(f"Token configuration not found for {token_key}")
         return None
     
-    url = f"https://api.etherscan.io/api"
-    params = {
-        "module": "proxy",
-        "action": "eth_getTransactionByHash",
-        "txhash": tx_hash,
-        "apikey": ETHERSCAN_API_KEY
-    }
+    chainid = token_config.get("chainid", 1)  # Default to Ethereum if not specified
     
-    try:
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("result"):
-                return data["result"]
-    except Exception as e:
-        print(f"Error fetching transaction details: {e}")
-    
-    return None
-
-
+    return unified_etherscan_api_call(
+        module="proxy",
+        action="eth_getTransactionByHash",
+        chainid=chainid,
+        txhash=tx_hash
+    )
 
 def get_last_5_transactions(token_key="emp"):
     """Get the last 5 buy/sell transactions from the Uniswap pool for a specific token"""
@@ -607,154 +562,154 @@ def format_last_5_transactions(transactions, token_key="emp"):
     
     return full_message
 
+def get_token_order(pool_address, token_address, network):
+    """
+    Determine which token is token0 and which is token1 in the pool
+    Returns: 'token0' if the tracked token is token0, 'token1' if it's token1
+    """
+    try:
+        w3 = w3_connections.get(network)
+        if not w3:
+            return None
+            
+        # Create pool contract instance
+        pool_contract = w3.eth.contract(
+            address=Web3.to_checksum_address(pool_address),
+            abi=UNISWAP_POOL_ABI
+        )
+        
+        # Get token0 and token1 addresses
+        token0_address = pool_contract.functions.token0().call()
+        token1_address = pool_contract.functions.token1().call()
+        
+        print(f"🔍 Pool {pool_address}:")
+        print(f"  Token0: {token0_address}")
+        print(f"  Token1: {token1_address}")
+        print(f"  Tracked Token: {token_address}")
+        
+        # Compare addresses (case-insensitive)
+        if token0_address.lower() == token_address.lower():
+            print(f"✅ Tracked token is Token0")
+            return 'token0'
+        elif token1_address.lower() == token_address.lower():
+            print(f"✅ Tracked token is Token1")
+            return 'token1'
+        else:
+            print(f"❌ Tracked token not found in pool!")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error getting token order: {e}")
+        return None
+
 def format_swap_message(swap_event, tx_hash, tx_details=None, token_key="emp"):
     """Format a swap event into a readable message for a specific token"""
     try:
+        # --- 1. Get Token Configuration ---
         token_config = TOKENS.get(token_key)
         if not token_config:
             return f"🔄 **New Swap Detected**\n\n🔗 [View Transaction](https://etherscan.io/tx/{tx_hash})", "🔄 SWAP"
         
         token_symbol = token_config["symbol"]
         explorer_url = token_config["explorer_url"]
+        token_address = token_config["token_address"]
+        pool_address = token_config["pool_address"]
+        network = token_config["network"]
         
-        # Extract swap data
-        sender = swap_event["args"]["sender"]
-        recipient = swap_event["args"]["recipient"]
-        amount0 = swap_event["args"]["amount0"]
-        amount1 = swap_event["args"]["amount1"]
+        # --- 2. Get Swap Event Data ---
+        amount0_raw = swap_event["args"]["amount0"]
+        amount1_raw = swap_event["args"]["amount1"]
         
-        # Token decimals (both tokens = 18, ETH = 18)
-        TOKEN_DECIMALS = 18
-        ETH_DECIMALS = 18
+        # --- 3. Determine Token Order in the Pool ---
+        print(f"[{token_key.upper()}] Determining token order for pool {pool_address}...")
+        token_order = get_token_order(pool_address, token_address, network)
         
-        # Convert raw amounts to human readable
-        token_amount = abs(amount0) / (10 ** TOKEN_DECIMALS)
-        eth_amount = abs(amount1) / (10 ** ETH_DECIMALS)
-        
-        # Determine swap direction and initialize variables
-        if amount0 > 0 and amount1 < 0:
-            # Token0 (Token) -> Token1 (ETH) = SELL Token
-            direction = "🔴 SELL"
-            token_in = token_amount
-            eth_out = eth_amount
-            eth_in = 0
-            token_out = 0
-        elif amount0 < 0 and amount1 > 0:
-            # Token1 (ETH) -> Token0 (Token) = BUY Token
+        if not token_order:
+            print(f"[{token_key.upper()}] ❌ CRITICAL: Could not determine token order. Aborting format.")
+            return f"⚠️ **Swap Detected (Unknown Direction)**\n\n🔗 [{tx_hash[:10]}...]({explorer_url}/tx/{tx_hash})", "UNKNOWN"
+
+        print(f"[{token_key.upper()}] ✅ Token is {token_order}")
+
+        # --- 4. Assign Amounts Based on Token Order ---
+        # This is the key logic fix. We directly assign amounts based on the token's position.
+        if token_order == 'token0':
+            tracked_token_amount_raw = amount0_raw
+            eth_amount_raw = amount1_raw
+        else: # token_order == 'token1'
+            tracked_token_amount_raw = amount1_raw
+            eth_amount_raw = amount0_raw
+            
+        # Convert raw amounts to human-readable format (assuming 18 decimals for both)
+        tracked_token_amount = abs(tracked_token_amount_raw) / (10 ** 18)
+        eth_amount = abs(eth_amount_raw) / (10 ** 18)
+
+        # --- 5. Determine Direction (BUY or SELL) ---
+        # This logic is now simple and reliable.
+        if tracked_token_amount_raw < 0:
             direction = "🟢 BUY"
-            eth_in = eth_amount
-            token_out = token_amount
-            token_in = 0
-            eth_out = 0
+        elif tracked_token_amount_raw > 0:
+            direction = "🔴 SELL"
         else:
-            # Fallback for other cases
+            # This can happen in complex swaps, we'll just report it.
             direction = "🔄 SWAP"
-            token_in = token_amount if amount0 > 0 else 0
-            eth_out = eth_amount if amount1 > 0 else 0
-            eth_in = eth_amount if amount1 < 0 else 0
-            token_out = token_amount if amount0 < 0 else 0
+
+        print(f"[{token_key.upper()}] ✅ Detected {direction}: {tracked_token_amount:.3f} {token_symbol} for {eth_amount:.3f} ETH")
+
+        # --- 6. Get Prices and Calculate USD Value ---
+        # Your existing price caching logic is good.
+        token_usd_price, eth_usd_price = get_cached_prices("T" if token_symbol == "T" else "EMP")
+        total_usd = eth_amount * eth_usd_price
         
-        # Get current prices using cache to reduce API calls
-        if token_symbol == "T":
-            # For Talos, we only need ETH price for Arbitrum
-            token_usd_price, eth_usd_price = get_cached_prices("T")
+        # Calculate the price per token from this specific transaction
+        if tracked_token_amount > 0 and total_usd > 0:
+            price_per_token = total_usd / tracked_token_amount
         else:
-            # For EMP, get both prices
-            token_usd_price, eth_usd_price = get_cached_prices()
-        
-        # Calculate USD values and emojis
-        if direction == "🔴 SELL":
-            # For SELL: Calculate USD value based on ETH received
-            eth_usd_value = eth_out * eth_usd_price
-            total_usd = eth_usd_value
-            
-            print(f"SELL calculation - eth_out: {eth_out}, eth_usd_price: ${eth_usd_price}, total_usd: ${total_usd}")
-            
-            # Calculate actual price per token from the transaction
-            if token_in > 0 and eth_usd_price > 0:
-                actual_price_per_token = eth_usd_value / token_in
-            else:
-                actual_price_per_token = token_usd_price  # Fallback to current price
-            
-            # Calculate emojis for sell (🍆🍌 alternating)
-            emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0)) if total_usd > 0 else 1
-            sell_emojis = ""
+            price_per_token = 0 # Fallback
+
+        # --- 7. Build the Message ---
+        emoji_count = max(1, int(total_usd / 50)) if total_usd > 0 else 1
+        action_emojis = ""
+
+        if direction == "🟢 BUY":
+            title = f"🟢 **BOUGHT ${token_symbol}** 🟢"
+            # Build buy emojis (🍑🍒)
             for i in range(emoji_count):
-                if i % 2 == 0:
-                    sell_emojis += "🍆"
-                else:
-                    sell_emojis += "🍌"
+                action_emojis += "🍑" if i % 2 == 0 else "🍒"
             
-            # Format message based on whether we have USD prices
-            if eth_usd_price > 0:
-                message = (
-                    f"🔴 **SOLD ${token_symbol}** 🔴\n\n"
-                    f"{sell_emojis}\n\n"
-                    f"💰 **${total_usd:.2f} ({eth_out:.2f} ETH)**\n"
-                    f"💎 **{token_in:.3f} ${token_symbol}**\n"
-                    f"💵 **${actual_price_per_token:.2f} per {token_symbol}**\n\n"
-                    f"🔗 **Transaction:** [View TX]({explorer_url}/tx/{tx_hash})"
-                )
-            else:
-                message = (
-                    f"🔴 **SOLD ${token_symbol}** 🔴\n\n"
-                    f"{sell_emojis}\n\n"
-                    f"💰 **{eth_out:.2f} ETH**\n"
-                    f"💎 **{token_in:.3f} ${token_symbol}**\n\n"
-                    f"🔗 **Transaction:** [View TX]({explorer_url}/tx/{tx_hash})"
-                )
-        elif direction == "🟢 BUY":
-            # For BUY: Calculate USD value based on ETH spent
-            eth_usd_value = eth_in * eth_usd_price
-            total_usd = eth_usd_value
-            
-            print(f"BUY calculation - eth_in: {eth_in}, eth_usd_price: ${eth_usd_price}, total_usd: ${total_usd}")
-            
-            # Calculate actual price per token from the transaction
-            if token_out > 0 and eth_usd_price > 0:
-                actual_price_per_token = eth_usd_value / token_out
-            else:
-                actual_price_per_token = token_usd_price  # Fallback to current price
-            
-            # Calculate emojis for buy (🍑🍒 alternating)
-            emoji_count = max(1, int(total_usd / 50) + (1 if total_usd % 50 > 0 else 0)) if total_usd > 0 else 1
-            buy_emojis = ""
-            for i in range(emoji_count):
-                if i % 2 == 0:
-                    buy_emojis += "🍑"
-                else:
-                    buy_emojis += "🍒"
-            
-            # Format message based on whether we have USD prices
-            if eth_usd_price > 0:
-                message = (
-                    f"🟢 **BOUGHT ${token_symbol}** 🟢\n\n"
-                    f"{buy_emojis}\n\n"
-                    f"💰 **${total_usd:.2f} ({eth_in:.2f} ETH)**\n"
-                    f"💎 **{token_out:.3f} ${token_symbol}**\n"
-                    f"💵 **${actual_price_per_token:.2f} per {token_symbol}**\n\n"
-                    f"🔗 **Transaction:** [View TX]({explorer_url}/tx/{tx_hash})"
-                )
-            else:
-                message = (
-                    f"🟢 **BOUGHT ${token_symbol}** 🟢\n\n"
-                    f"{buy_emojis}\n\n"
-                    f"💰 **{eth_in:.2f} ETH**\n"
-                    f"💎 **{token_out:.3f} ${token_symbol}**\n\n"
-                    f"🔗 **Transaction:** [View TX]({explorer_url}/tx/{tx_hash})"
-                )
-        else:
-            message = (
-                f"🔄 **SWAP DETECTED**\n\n"
-                f"💎 **Amounts:** {token_amount:.3f} {token_symbol} / {eth_amount:.2f} ETH\n"
-                f"🔗 **Transaction:** [View TX]({explorer_url}/tx/{tx_hash})"
+            details = (
+                f"💰 **${total_usd:,.2f}** ({eth_amount:.3f} ETH)\n"
+                f"💎 **{tracked_token_amount:,.3f} ${token_symbol}**\n"
             )
+
+        elif direction == "🔴 SELL":
+            title = f"🔴 **SOLD ${token_symbol}** 🔴"
+            # Build sell emojis (🍆🍌)
+            for i in range(emoji_count):
+                action_emojis += "🍆" if i % 2 == 0 else "🍌"
+
+            details = (
+                f"💰 **${total_usd:,.2f}** ({eth_amount:.3f} ETH)\n"
+                f"💎 **{tracked_token_amount:,.3f} ${token_symbol}**\n"
+            )
+        else: # SWAP or UNKNOWN
+            return f"🔄 **Swap Detected**\n\n🔗 [{tx_hash[:10]}...]({explorer_url}/tx/{tx_hash})", "SWAP"
+
+        # Assemble the final message
+        message = (
+            f"{title}\n\n"
+            f"{action_emojis}\n\n"
+            f"{details}"
+            f"💵 **${price_per_token:,.4f} per ${token_symbol}**\n\n"
+            f"🔗 **Transaction:** [View TX]({explorer_url}/tx/{tx_hash})"
+        )
         
         return message, direction
         
     except Exception as e:
-        print(f"Error formatting swap message: {e}")
-        return f"🔄 **New Swap Detected**\n\n🔗 [View Transaction]({explorer_url}/tx/{tx_hash})", "🔄 SWAP"
+        print(f"❌ CRITICAL ERROR in format_swap_message for {token_key}: {e}")
+        # Return a safe fallback message
+        explorer_url = TOKENS.get(token_key, {}).get("explorer_url", "https://etherscan.io")
+        return f"⚠️ **Error processing transaction**\n\n🔗 [{tx_hash[:10]}...]({explorer_url}/tx/{tx_hash})", "ERROR"
 
 async def monitor_transactions(bot, token_key="emp", group_id=None):
     """Monitor Uniswap pool for new transactions for a specific token"""
@@ -827,8 +782,7 @@ async def monitor_transactions(bot, token_key="emp", group_id=None):
                     print(f"✅ [{token_key.upper()}] Current block: {current_block}")
                 except Exception as e:
                     if "429" in str(e) or "Too Many Requests" in str(e):
-                        print(f"⚠️ Rate limited by {network} provider for {token_key}, waiting 15 seconds...")
-                        await asyncio.sleep(15)
+                        print(f"⚠️ Rate limited by {network} provider for {token_key}, continuing immediately...")
                         continue
                     else:
                         print(f"❌ Error getting block number for {token_key}: {e}")
@@ -869,74 +823,89 @@ async def monitor_transactions(bot, token_key="emp", group_id=None):
                                 if len(swap_events) == 0:
                                     print(f"🔍 [{token_key.upper()}] No Swap events found, checking for other event types...")
                                     
-                                    # Try to get any events from this contract
+                                    # Try to get any events from this contract using Web3 first, then fallback to Etherscan API
+                                    all_logs = None
                                     try:
                                         all_logs = w3.eth.get_logs({
                                             'address': Web3.to_checksum_address(token_config["pool_address"]),
                                             'fromBlock': chunk_start,
                                             'toBlock': chunk_end
                                         })
-                                        
-                                        if len(all_logs) > 0:
-                                            print(f"✅ [{token_key.upper()}] Found {len(all_logs)} total events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
-                                            
-                                            # Process these as generic events
-                                            for log in all_logs:
-                                                tx_hash = log["transactionHash"].hex()
-                                                
-                                                # Avoid duplicate processing
-                                                if tx_hash in processed_transactions[token_key]:
-                                                    continue
-                                                
-                                                processed_transactions[token_key].add(tx_hash)
-                                                
-                                                # Create a generic event structure
-                                                event = {
-                                                    "transactionHash": log["transactionHash"],
-                                                    "blockNumber": log["blockNumber"],
-                                                    "args": {
-                                                        "amount0": 0,
-                                                        "amount1": 0,
-                                                        "sqrtPriceX96": 0,
-                                                        "liquidity": 0,
-                                                        "tick": 0
-                                                    }
-                                                }
-                                                
-                                                # Get transaction details
-                                                print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
-                                                tx_details = get_transaction_details(tx_hash)
-                                                print(f"✅ [{token_key.upper()}] Transaction details retrieved")
-                                                
-                                                # Format and send message
-                                                message_result = format_swap_message(event, tx_hash, tx_details, token_key)
-                                                
-                                                if isinstance(message_result, tuple):
-                                                    message, direction = message_result
-                                                else:
-                                                    message = message_result
-                                                    direction = "🔄 SWAP"
-                                                
-                                                # Send the message
-                                                try:
-                                                    await bot.send_message(
-                                                        chat_id=group_id,
-                                                        text=message,
-                                                        parse_mode='Markdown',
-                                                        disable_web_page_preview=True
-                                                    )
-                                                    print(f"📤 [{token_key.upper()}] Posted transaction: {tx_hash[:10]}...")
-                                                except Exception as e:
-                                                    print(f"❌ Error sending message for {token_key}: {e}")
-                                                
-                                                # Small delay to avoid rate limits
-                                                await asyncio.sleep(1)
-                                        
-                                        else:
-                                            print(f"✅ [{token_key.upper()}] Found 0 events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
-                                            
+                                        print(f"✅ [{token_key.upper()}] Retrieved logs via Web3")
                                     except Exception as e:
-                                        print(f"❌ Error getting all logs for {token_key}: {e}")
+                                        print(f"⚠️ Web3 get_logs failed for {token_key}: {e}")
+                                        # Fallback to Etherscan API
+                                        try:
+                                            print(f"🔍 [{token_key.upper()}] Trying Etherscan API fallback...")
+                                            all_logs = get_logs_via_etherscan(
+                                                chunk_start, 
+                                                chunk_end, 
+                                                token_config["pool_address"], 
+                                                token_key
+                                            )
+                                            if all_logs:
+                                                print(f"✅ [{token_key.upper()}] Retrieved logs via Etherscan API")
+                                            else:
+                                                print(f"❌ Etherscan API also failed for {token_key}")
+                                        except Exception as e2:
+                                            print(f"❌ Etherscan API fallback also failed for {token_key}: {e2}")
+                                    
+                                    if all_logs and len(all_logs) > 0:
+                                        print(f"✅ [{token_key.upper()}] Found {len(all_logs)} total events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
+                                        
+                                        # Process these as generic events
+                                        for log in all_logs:
+                                            tx_hash = log["transactionHash"].hex()
+                                            
+                                            # Avoid duplicate processing
+                                            if tx_hash in processed_transactions[token_key]:
+                                                continue
+                                            
+                                            processed_transactions[token_key].add(tx_hash)
+                                            
+                                            # Create a generic event structure
+                                            event = {
+                                                "transactionHash": log["transactionHash"],
+                                                "blockNumber": log["blockNumber"],
+                                                "args": {
+                                                    "amount0": 0,
+                                                    "amount1": 0,
+                                                    "sqrtPriceX96": 0,
+                                                    "liquidity": 0,
+                                                    "tick": 0
+                                                }
+                                            }
+                                            
+                                            # Get transaction details
+                                            print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
+                                            tx_details = get_transaction_details(tx_hash, token_key)
+                                            print(f"✅ [{token_key.upper()}] Transaction details retrieved")
+                                            
+                                            # Format and send message
+                                            message_result = format_swap_message(event, tx_hash, tx_details, token_key)
+                                            
+                                            if isinstance(message_result, tuple):
+                                                message, direction = message_result
+                                            else:
+                                                message = message_result
+                                                direction = "🔄 SWAP"
+                                            
+                                            # Send the message
+                                            try:
+                                                await bot.send_message(
+                                                    chat_id=group_id,
+                                                    text=message,
+                                                    parse_mode='Markdown',
+                                                    disable_web_page_preview=True
+                                                )
+                                                print(f"📤 [{token_key.upper()}] Posted transaction: {tx_hash[:10]}...")
+                                            except Exception as e:
+                                                print(f"❌ Error sending message for {token_key}: {e}")
+                                            
+                                            # Small delay to avoid rate limits
+                                            await asyncio.sleep(1)
+                                    
+                                    else:
                                         print(f"✅ [{token_key.upper()}] Found 0 events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
                                 else:
                                     print(f"✅ [{token_key.upper()}] Found {len(swap_events)} events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
@@ -952,7 +921,7 @@ async def monitor_transactions(bot, token_key="emp", group_id=None):
                                         
                                         # Get transaction details
                                         print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
-                                        tx_details = get_transaction_details(tx_hash)
+                                        tx_details = get_transaction_details(tx_hash, token_key)
                                         print(f"✅ [{token_key.upper()}] Transaction details retrieved")
                                         
                                         # Format and send message
@@ -1049,74 +1018,89 @@ async def monitor_transactions(bot, token_key="emp", group_id=None):
                             if len(swap_events) == 0:
                                 print(f"🔍 [{token_key.upper()}] No Swap events found, checking for other event types...")
                                 
-                                # Try to get any events from this contract
+                                # Try to get any events from this contract using Web3 first, then fallback to Etherscan API
+                                all_logs = None
                                 try:
                                     all_logs = w3.eth.get_logs({
                                         'address': Web3.to_checksum_address(token_config["pool_address"]),
                                         'fromBlock': latest_block + 1,
                                         'toBlock': current_block
                                     })
-                                    
-                                    if len(all_logs) > 0:
-                                        print(f"✅ [{token_key.upper()}] Found {len(all_logs)} total events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
-                                        
-                                        # Process these as generic events
-                                        for log in all_logs:
-                                            tx_hash = log["transactionHash"].hex()
-                                            
-                                            # Avoid duplicate processing
-                                            if tx_hash in processed_transactions[token_key]:
-                                                continue
-                                            
-                                            processed_transactions[token_key].add(tx_hash)
-                                            
-                                            # Create a generic event structure
-                                            event = {
-                                                "transactionHash": log["transactionHash"],
-                                                "blockNumber": log["blockNumber"],
-                                                "args": {
-                                                    "amount0": 0,
-                                                    "amount1": 0,
-                                                    "sqrtPriceX96": 0,
-                                                    "liquidity": 0,
-                                                    "tick": 0
-                                                }
-                                            }
-                                            
-                                            # Get transaction details
-                                            print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
-                                            tx_details = get_transaction_details(tx_hash)
-                                            print(f"✅ [{token_key.upper()}] Transaction details retrieved")
-                                            
-                                            # Format and send message
-                                            message_result = format_swap_message(event, tx_hash, tx_details, token_key)
-                                            
-                                            if isinstance(message_result, tuple):
-                                                message, direction = message_result
-                                            else:
-                                                message = message_result
-                                                direction = "🔄 SWAP"
-                                            
-                                            # Send the message
-                                            try:
-                                                await bot.send_message(
-                                                    chat_id=group_id,
-                                                    text=message,
-                                                    parse_mode='Markdown',
-                                                    disable_web_page_preview=True
-                                                )
-                                                print(f"📤 [{token_key.upper()}] Posted transaction: {tx_hash[:10]}...")
-                                            except Exception as e:
-                                                print(f"❌ Error sending message for {token_key}: {e}")
-                                            
-                                            # Small delay to avoid rate limits
-                                            await asyncio.sleep(1)
-                                    
-                                    else:
-                                        print(f"✅ [{token_key.upper()}] Found 0 events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
-                                        
+                                    print(f"✅ [{token_key.upper()}] Retrieved logs via Web3")
                                 except Exception as e:
-                                    print(f"❌ Error getting all logs for {token_key}: {e}")
+                                    print(f"⚠️ Web3 get_logs failed for {token_key}: {e}")
+                                    # Fallback to Etherscan API
+                                    try:
+                                        print(f"🔍 [{token_key.upper()}] Trying Etherscan API fallback...")
+                                        all_logs = get_logs_via_etherscan(
+                                            latest_block + 1, 
+                                            current_block, 
+                                            token_config["pool_address"], 
+                                            token_key
+                                        )
+                                        if all_logs:
+                                            print(f"✅ [{token_key.upper()}] Retrieved logs via Etherscan API")
+                                        else:
+                                            print(f"❌ Etherscan API also failed for {token_key}")
+                                    except Exception as e2:
+                                        print(f"❌ Etherscan API fallback also failed for {token_key}: {e2}")
+                                
+                                if all_logs and len(all_logs) > 0:
+                                    print(f"✅ [{token_key.upper()}] Found {len(all_logs)} total events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
+                                    
+                                    # Process these as generic events
+                                    for log in all_logs:
+                                        tx_hash = log["transactionHash"].hex()
+                                        
+                                        # Avoid duplicate processing
+                                        if tx_hash in processed_transactions[token_key]:
+                                            continue
+                                        
+                                        processed_transactions[token_key].add(tx_hash)
+                                        
+                                        # Create a generic event structure
+                                        event = {
+                                            "transactionHash": log["transactionHash"],
+                                            "blockNumber": log["blockNumber"],
+                                            "args": {
+                                                "amount0": 0,
+                                                "amount1": 0,
+                                                "sqrtPriceX96": 0,
+                                                "liquidity": 0,
+                                                "tick": 0
+                                            }
+                                        }
+                                        
+                                        # Get transaction details
+                                        print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
+                                        tx_details = get_transaction_details(tx_hash, token_key)
+                                        print(f"✅ [{token_key.upper()}] Transaction details retrieved")
+                                        
+                                        # Format and send message
+                                        message_result = format_swap_message(event, tx_hash, tx_details, token_key)
+                                        
+                                        if isinstance(message_result, tuple):
+                                            message, direction = message_result
+                                        else:
+                                            message = message_result
+                                            direction = "🔄 SWAP"
+                                        
+                                        # Send the message
+                                        try:
+                                            await bot.send_message(
+                                                chat_id=group_id,
+                                                text=message,
+                                                parse_mode='Markdown',
+                                                disable_web_page_preview=True
+                                            )
+                                            print(f"📤 [{token_key.upper()}] Posted transaction: {tx_hash[:10]}...")
+                                        except Exception as e:
+                                            print(f"❌ Error sending message for {token_key}: {e}")
+                                        
+                                        # Small delay to avoid rate limits
+                                        await asyncio.sleep(1)
+                                
+                                else:
                                     print(f"✅ [{token_key.upper()}] Found 0 events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
                             else:
                                 print(f"✅ [{token_key.upper()}] Found {len(swap_events)} events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
@@ -1132,7 +1116,7 @@ async def monitor_transactions(bot, token_key="emp", group_id=None):
                                     
                                     # Get transaction details
                                     print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
-                                    tx_details = get_transaction_details(tx_hash)
+                                    tx_details = get_transaction_details(tx_hash, token_key)
                                     print(f"✅ [{token_key.upper()}] Transaction details retrieved")
                                     
                                     # Format and send message
@@ -1832,12 +1816,18 @@ async def send_eth_price(update, context):
         return
 
 async def send_performance_comparison(update, context):
-    # Get ETH data from CoinGecko, EMP and BTC from pools
+    """Get 24-hour performance data for ETH, BTC, and EMP with relative comparisons"""
     print(f"📈 Command called: /performance by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    
+    # Get data for all three assets from CoinGecko
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
         "vs_currency": "usd",
-        "ids": "ethereum"
+        "ids": "ethereum,bitcoin,empyreal",
+        "order": "market_cap_desc",
+        "per_page": "10",
+        "page": "1",
+        "sparkline": "false"
     }
     
     try:
@@ -1847,26 +1837,16 @@ async def send_performance_comparison(update, context):
             return
             
         data = response.json()
-        if not data or len(data) < 1:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch ETH market data. Please try again.")
+        if not data or len(data) < 3:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch market data. Please try again.")
             return
         
-        # Get EMP price from pool and BTC price from ETH data
-        emp_price = get_emp_price_from_pool()
-        btc_price = get_btc_price_from_eth()
-        
-        if emp_price is None:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP price from pool.")
-            return
-        
-        if btc_price is None:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch BTC price from ETH data.")
-            return
+
         
         # Organize data by coin
         coin_data = {}
         
-        # ETH data from CoinGecko
+        # Process CoinGecko data for ETH, BTC, and EMP
         for coin in data:
             if coin["id"] == "ethereum":
                 coin_data["ethereum"] = {
@@ -1874,47 +1854,67 @@ async def send_performance_comparison(update, context):
                     "change_24h": coin["price_change_percentage_24h"],
                     "price_change_24h": coin["price_change_24h"]
                 }
+            elif coin["id"] == "bitcoin":
+                coin_data["bitcoin"] = {
+                    "price": coin["current_price"],
+                    "change_24h": coin["price_change_percentage_24h"],
+                    "price_change_24h": coin["price_change_24h"]
+                }
+            elif coin["id"] == "empyreal":
+                coin_data["empyreal"] = {
+                    "price": coin["current_price"],
+                    "change_24h": coin["price_change_percentage_24h"],
+                    "price_change_24h": coin["price_change_24h"]
+                }
         
-        # Add EMP and BTC data from pools
-        coin_data["empyreal"] = {
-            "price": emp_price,
-            "change_24h": 0,  # Pool doesn't provide 24h change
-            "price_change_24h": 0
-        }
-        
-        coin_data["bitcoin"] = {
-            "price": btc_price,
-            "change_24h": 0,  # Pool doesn't provide 24h change
-            "price_change_24h": 0
-        }
+        # If EMP data not available from CoinGecko, fallback to pool price
+        if "empyreal" not in coin_data:
+            emp_price = get_emp_price_from_pool()
+            if emp_price is None:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP price from pool.")
+                return
+            
+            coin_data["empyreal"] = {
+                "price": emp_price,
+                "change_24h": 0,  # Fallback to 0 if not available
+                "price_change_24h": 0
+            }
         
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Error fetching market data. Please try again.")
         return
     
     # Format the data
-    def format_number(num):
-        return f"{num:,.0f}"
-    
     def format_percent(value):
         return f"{value:+.2f}%" if value >= 0 else f"{value:.2f}%"
     
+    # Calculate relative performance
+    eth_change = coin_data["ethereum"]["change_24h"]
+    btc_change = coin_data["bitcoin"]["change_24h"]
+    emp_change = coin_data["empyreal"]["change_24h"]
+    
+    # Relative performance calculations
+    emp_vs_btc = emp_change - btc_change
+    emp_vs_eth = emp_change - eth_change
+    eth_vs_btc = eth_change - btc_change
+    
     text = (
-        f"📊 Price Comparison:\n\n"
-        f"💰 Current Prices:\n"
+        f"📊 **24-Hour Performance Report** 📊\n\n"
+        f"💰 **Current Prices:**\n"
         f"₿ Bitcoin: ${coin_data['bitcoin']['price']:,.2f}\n"
         f"Ξ Ethereum: ${coin_data['ethereum']['price']:,.2f}\n"
         f"💎 EMP: ${coin_data['empyreal']['price']:,.2f}\n\n"
-        f"📈 24h Performance (ETH only):\n"
-        f"Ξ Ethereum: ${coin_data['ethereum']['price_change_24h']:+.2f} ({format_percent(coin_data['ethereum']['change_24h'])})\n"
-        f"₿ Bitcoin: Price calculated from ETH/BTC ratio\n"
-        f"💎 EMP: Price from Uniswap V3 Pool\n\n"
-        f"📊 Price Sources:\n"
-        f"📍 BTC: Calculated from ETH price data\n"
-        f"📍 EMP Pool: 0xe092769bc1fa5262D4f48353f90890Dcc339BF80\n"
+        f"📈 **24h Change:**\n"
+        f"₿ Bitcoin: {format_percent(btc_change)}\n"
+        f"Ξ Ethereum: {format_percent(eth_change)}\n"
+        f"💎 EMP: {format_percent(emp_change)}\n\n"
+        f"📊 **Relative Performance:**\n"
+        f"💎 EMP vs ₿ BTC: {format_percent(emp_vs_btc)}\n"
+        f"💎 EMP vs Ξ ETH: {format_percent(emp_vs_eth)}\n"
+        f"Ξ ETH vs ₿ BTC: {format_percent(eth_vs_btc)}"
     )
     
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
 
 async def send_daily_volume(update, context):
     """Command to show daily trading volume for EMP"""
@@ -1996,6 +1996,121 @@ def get_btc_price_from_eth() -> Optional[float]:
     except Exception as e:
         print(f"❌ BTC price calculation failed: {e}")
         return None
+
+# Store the group chat IDs when monitoring starts
+monitoring_groups = {}
+
+# Track monitoring tasks to properly stop them
+monitoring_tasks = {}
+
+# Initialize Web3 connections
+w3_connections = {}
+if INFURA_URL:
+    w3_connections["ethereum"] = Web3(Web3.HTTPProvider(INFURA_URL))
+if ARBITRUM_RPC_URL:
+    w3_connections["arbitrum"] = Web3(Web3.HTTPProvider(ARBITRUM_RPC_URL))
+
+# Uniswap V3 Pool ABI (expanded for different event types)
+UNISWAP_POOL_ABI = [
+    # Token functions
+    {
+        "inputs": [],
+        "name": "token0",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "token1",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    # Events
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "sender", "type": "address"},
+            {"indexed": True, "name": "recipient", "type": "address"},
+            {"indexed": False, "name": "amount0", "type": "int256"},
+            {"indexed": False, "name": "amount1", "type": "int256"},
+            {"indexed": False, "name": "sqrtPriceX96", "type": "uint160"},
+            {"indexed": False, "name": "liquidity", "type": "uint128"},
+            {"indexed": False, "name": "tick", "type": "int24"}
+        ],
+        "name": "Swap",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "owner", "type": "address"},
+            {"indexed": True, "name": "tickLower", "type": "int24"},
+            {"indexed": True, "name": "tickUpper", "type": "int24"},
+            {"indexed": False, "name": "amount", "type": "uint128"},
+            {"indexed": False, "name": "amount0", "type": "uint256"},
+            {"indexed": False, "name": "amount1", "type": "uint256"}
+        ],
+        "name": "Mint",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "owner", "type": "address"},
+            {"indexed": True, "name": "tickLower", "type": "int24"},
+            {"indexed": True, "name": "tickUpper", "type": "int24"},
+            {"indexed": False, "name": "amount", "type": "uint128"},
+            {"indexed": False, "name": "amount0", "type": "uint256"},
+            {"indexed": False, "name": "amount1", "type": "uint256"}
+        ],
+        "name": "Burn",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "sender", "type": "address"},
+            {"indexed": True, "name": "recipient", "type": "address"},
+            {"indexed": False, "name": "amount0", "type": "uint256"},
+            {"indexed": False, "name": "amount1", "type": "uint256"},
+            {"indexed": False, "name": "paid0", "type": "uint256"},
+            {"indexed": False, "name": "paid1", "type": "uint256"}
+        ],
+        "name": "Flash",
+        "type": "event"
+    }
+]
+
+def get_logs_via_etherscan(from_block, to_block, address, token_key="emp"):
+    """
+    Get logs via unified Etherscan V2 API
+    
+    Args:
+        from_block: Starting block number
+        to_block: Ending block number
+        address: Contract address to filter by
+        token_key: Token key for chain configuration
+    
+    Returns:
+        List of log entries or None if failed
+    """
+    token_config = TOKENS.get(token_key)
+    if not token_config:
+        print(f"Token configuration not found for {token_key}")
+        return None
+    
+    chainid = token_config.get("chainid", 1)
+    
+    return unified_etherscan_api_call(
+        module="logs",
+        action="getLogs",
+        chainid=chainid,
+        fromBlock=from_block,
+        toBlock=to_block,
+        address=address
+    )
 
 # Create application with unique session
 app = ApplicationBuilder().token(TOKEN).build()
