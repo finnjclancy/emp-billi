@@ -1979,6 +1979,7 @@ def get_btc_price_from_eth() -> Optional[float]:
         print(f"❌ BTC price calculation failed: {e}")
         return None
 
+# Create application with unique session
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("billi", send_price))
 app.add_handler(CommandHandler("price", send_detailed_price))
@@ -2006,4 +2007,5 @@ app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
 print("Bot started. Use /startmonitor in a group to begin EMP transaction monitoring.")
 print("Use /starttalos in a group to begin Talos transaction monitoring.")
 
+# Use polling with drop_pending_updates to avoid conflicts
 app.run_polling()
