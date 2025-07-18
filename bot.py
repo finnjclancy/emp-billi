@@ -7,6 +7,7 @@ import json
 from web3 import Web3
 from datetime import datetime
 import time
+from typing import Optional
 
 dotenv.load_dotenv()
 
@@ -32,7 +33,7 @@ TOKENS = {
     "talos": {
         "name": "Talos",
         "symbol": "T",
-        "pool_address": "0x30a538eFFD91ACeFb1b12CE9Bc0074eD18c9dFc9",
+        "pool_address": "0xdaAe914e4Bae2AAe4f536006C353117B90Fb37e3",
         "network": "arbitrum",
         "rpc_url": os.getenv("ARBITRUM_RPC_URL"),
         "explorer_url": "https://arbiscan.io",
@@ -51,6 +52,9 @@ ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY")
 # Store the group chat IDs when monitoring starts
 monitoring_groups = {}
 
+# Track monitoring tasks to properly stop them
+monitoring_tasks = {}
+
 # Initialize Web3 connections
 w3_connections = {}
 if INFURA_URL:
@@ -58,7 +62,7 @@ if INFURA_URL:
 if ARBITRUM_RPC_URL:
     w3_connections["arbitrum"] = Web3(Web3.HTTPProvider(ARBITRUM_RPC_URL))
 
-# Uniswap V3 Pool ABI (minimal for Swap events)
+# Uniswap V3 Pool ABI (expanded for different event types)
 UNISWAP_POOL_ABI = [
     {
         "anonymous": False,
@@ -73,6 +77,45 @@ UNISWAP_POOL_ABI = [
         ],
         "name": "Swap",
         "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "owner", "type": "address"},
+            {"indexed": True, "name": "tickLower", "type": "int24"},
+            {"indexed": True, "name": "tickUpper", "type": "int24"},
+            {"indexed": False, "name": "amount", "type": "uint128"},
+            {"indexed": False, "name": "amount0", "type": "uint256"},
+            {"indexed": False, "name": "amount1", "type": "uint256"}
+        ],
+        "name": "Mint",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "owner", "type": "address"},
+            {"indexed": True, "name": "tickLower", "type": "int24"},
+            {"indexed": True, "name": "tickUpper", "type": "int24"},
+            {"indexed": False, "name": "amount", "type": "uint128"},
+            {"indexed": False, "name": "amount0", "type": "uint256"},
+            {"indexed": False, "name": "amount1", "type": "uint256"}
+        ],
+        "name": "Burn",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "sender", "type": "address"},
+            {"indexed": True, "name": "recipient", "type": "address"},
+            {"indexed": False, "name": "amount0", "type": "uint256"},
+            {"indexed": False, "name": "amount1", "type": "uint256"},
+            {"indexed": False, "name": "paid0", "type": "uint256"},
+            {"indexed": False, "name": "paid1", "type": "uint256"}
+        ],
+        "name": "Flash",
+        "type": "event"
     }
 ]
 
@@ -86,6 +129,55 @@ processed_transactions = {
 price_cache = {}
 price_cache_timestamp = 0
 CACHE_DURATION = 60  # Cache prices for 60 seconds
+
+def get_eth_price() -> Optional[tuple[float, float]]:
+    """
+    Get current ETH price in USD and BTC using Etherscan API
+    
+    Returns:
+        Tuple of (USD price, BTC price) or None if failed
+        Example: (3428.49, 0.02876339)
+    """
+    try:
+        api_key = os.getenv('ETHERSCAN_API_KEY')
+        base_url = "https://api.etherscan.io/api"
+        
+        params = {
+            'module': 'stats',
+            'action': 'ethprice',
+            'apikey': api_key
+        }
+        
+        response = requests.get(base_url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('status') == '1' and data.get('result'):
+                result = data['result']
+                return (float(result['ethusd']), float(result['ethbtc']))
+            else:
+                print(f"ETH Price API Error: {data}")
+                return None
+        else:
+            print(f"ETH Price API Error: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        print(f"ETH Price Error: {e}")
+        return None
+
+def eth_usd() -> Optional[float]:
+    """
+    Get current ETH price in USD
+    
+    Returns:
+        ETH price in USD as float or None if failed
+        Example: 3411.23
+    """
+    prices = get_eth_price()
+    if prices:
+        return prices[0]  # USD price
+    return None
 
 def get_cached_prices(token_symbol=None):
     """Get cached prices or fetch new ones if cache is expired"""
@@ -107,52 +199,35 @@ def get_cached_prices(token_symbol=None):
             print(f"Using cached prices - EMP: ${emp_price}, ETH: ${eth_price}")
             return emp_price, eth_price
     
-    # Try multiple APIs to get prices
-    emp_usd_price = 0
+    # Get ETH price using Etherscan API (from price.py)
     eth_usd_price = 0
+    emp_usd_price = 0
     
-    # Try CoinGecko first
     try:
-        print("Trying CoinGecko API...")
-        price_url = "https://api.coingecko.com/api/v3/simple/price?ids=empyreal,ethereum&vs_currencies=usd"
-        response = requests.get(price_url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            emp_usd_price = data.get("empyreal", {}).get("usd", 0)
-            eth_usd_price = data.get("ethereum", {}).get("usd", 0)
-            print(f"CoinGecko prices - EMP: ${emp_usd_price}, ETH: ${eth_usd_price}")
+        print("🔍 Getting ETH price from Etherscan API... (~1 credit)")
+        eth_price = eth_usd()
+        if eth_price:
+            eth_usd_price = eth_price
+            print(f"✅ Etherscan ETH price: ${eth_usd_price}")
         else:
-            print(f"CoinGecko API error: {response.status_code}")
+            print("❌ Etherscan ETH price failed")
     except Exception as e:
-        print(f"CoinGecko API failed: {e}")
+        print(f"❌ Etherscan API failed: {e}")
     
-    # If ETH price is still 0, try alternative APIs
-    if eth_usd_price == 0:
-        # Try alternative CoinGecko endpoint
+    # For EMP price, we still need to use CoinGecko since Etherscan doesn't have EMP
+    if token_symbol != "T":  # Only get EMP price for EMP transactions
         try:
-            print("Trying CoinGecko ETH-only API...")
-            eth_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
-            eth_response = requests.get(eth_url, timeout=10)
-            if eth_response.status_code == 200:
-                eth_data = eth_response.json()
-                eth_usd_price = eth_data.get("ethereum", {}).get("usd", 0)
-                print(f"CoinGecko ETH-only price: ${eth_usd_price}")
+            print("🔍 Getting EMP price from CoinGecko API... (~1 credit)")
+            price_url = "https://api.coingecko.com/api/v3/simple/price?ids=empyreal&vs_currencies=usd"
+            response = requests.get(price_url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                emp_usd_price = data.get("empyreal", {}).get("usd", 0)
+                print(f"✅ CoinGecko EMP price: ${emp_usd_price}")
+            else:
+                print(f"❌ CoinGecko API error: {response.status_code}")
         except Exception as e:
-            print(f"CoinGecko ETH-only API failed: {e}")
-        
-        # If still no ETH price, try alternative API
-        if eth_usd_price == 0:
-            try:
-                print("Trying alternative API...")
-                # Try a different price API (example: CoinCap)
-                alt_url = "https://api.coincap.io/v2/assets/ethereum"
-                alt_response = requests.get(alt_url, timeout=10)
-                if alt_response.status_code == 200:
-                    alt_data = alt_response.json()
-                    eth_usd_price = float(alt_data.get("data", {}).get("priceUsd", 0))
-                    print(f"Alternative API ETH price: ${eth_usd_price}")
-            except Exception as e:
-                print(f"Alternative API failed: {e}")
+            print(f"❌ CoinGecko API failed: {e}")
     
     # Update cache with whatever we got
     price_cache = {
@@ -585,7 +660,7 @@ def format_swap_message(swap_event, tx_hash, tx_details=None, token_key="emp"):
 
 async def monitor_transactions(bot, token_key="emp", group_id=None):
     """Monitor Uniswap pool for new transactions for a specific token"""
-    global monitoring_groups, processed_transactions
+    global monitoring_groups, processed_transactions, monitoring_tasks
     
     token_config = TOKENS.get(token_key)
     if not token_config:
@@ -602,6 +677,10 @@ async def monitor_transactions(bot, token_key="emp", group_id=None):
     if not group_id:
         print(f"No group chat ID set for {token_key}. Use /startmonitor in a group first.")
         return
+    
+    # Store the task reference for proper stopping
+    task = asyncio.current_task()
+    monitoring_tasks[token_key] = task
     
     try:
         # Create contract instance
@@ -631,143 +710,440 @@ async def monitor_transactions(bot, token_key="emp", group_id=None):
                 print(f"Error getting initial block number for {token_key}: {e}")
                 return
         
-        while True:
+        # Set polling interval based on network
+        if network == "ethereum":
+            polling_interval = 15  # 15 seconds for Ethereum
+            max_blocks_per_call = 5  # Process more blocks for Ethereum
+            skip_threshold = 8  # Skip if more than 8 blocks behind
+        else:  # arbitrum
+            polling_interval = 1  # 1 second for Arbitrum
+            max_blocks_per_call = 50  # Process up to 50 blocks for Arbitrum (conservative)
+            skip_threshold = 100  # Skip if more than 100 blocks behind
+        
+        while token_key in monitoring_groups:  # Check if monitoring should continue
             try:
                 # Get new blocks with rate limiting
                 try:
+                    print(f"🔍 [{token_key.upper()}] Getting current block number... (1 credit)")
                     current_block = w3.eth.block_number
+                    print(f"✅ [{token_key.upper()}] Current block: {current_block}")
                 except Exception as e:
                     if "429" in str(e) or "Too Many Requests" in str(e):
-                        print(f"Rate limited by {network} provider for {token_key}, waiting 60 seconds...")
-                        await asyncio.sleep(60)
+                        print(f"⚠️ Rate limited by {network} provider for {token_key}, waiting 15 seconds...")
+                        await asyncio.sleep(15)
                         continue
                     else:
-                        print(f"Error getting block number for {token_key}: {e}")
-                        await asyncio.sleep(30)
+                        print(f"❌ Error getting block number for {token_key}: {e}")
+                        await asyncio.sleep(10)
                         continue
                 
                 if current_block > latest_block:
-                    # Check for swap events in new blocks
-                    for block_num in range(latest_block + 1, current_block + 1):
-                        try:
-                            # Get swap events from the block with rate limiting
+                    # Check for swap events in new blocks (smaller batches for efficiency)
+                    try:
+                        blocks_to_process = current_block - latest_block
+                        
+                        # Skip processing if too many blocks to avoid rate limits
+                        if blocks_to_process > skip_threshold:
+                            print(f"⚠️ [{token_key.upper()}] Too many blocks to process ({blocks_to_process}), skipping to avoid rate limits. Latest: {latest_block}, Current: {current_block}")
+                            latest_block = current_block - 2  # Skip to last 2 blocks
+                            continue
+                        
+                        if blocks_to_process > max_blocks_per_call:
+                            # Process in chunks
+                            total_chunks = (blocks_to_process + max_blocks_per_call - 1) // max_blocks_per_call
+                            print(f"📊 [{token_key.upper()}] Processing {blocks_to_process} blocks in {total_chunks} chunks of {max_blocks_per_call} blocks each")
+                            
+                            for chunk_start in range(latest_block + 1, current_block + 1, max_blocks_per_call):
+                                chunk_end = min(chunk_start + max_blocks_per_call - 1, current_block)
+                                chunk_size = chunk_end - chunk_start + 1
+                                estimated_credits = max(10, chunk_size * 2)  # Base 10 + 2 per block
+                                
+                                # Get swap events from this chunk
+                                print(f"🔍 [{token_key.upper()}] Getting events from blocks {chunk_start}-{chunk_end} ({chunk_size} blocks)... (~{estimated_credits} credits)")
+                                
+                                # Try to get Swap events first
+                                swap_events = pool_contract.events.Swap.get_logs(
+                                    fromBlock=chunk_start,
+                                    toBlock=chunk_end
+                                )
+                                
+                                # If no Swap events, try other event types
+                                if len(swap_events) == 0:
+                                    print(f"🔍 [{token_key.upper()}] No Swap events found, checking for other event types...")
+                                    
+                                    # Try to get any events from this contract
+                                    try:
+                                        all_logs = w3.eth.get_logs({
+                                            'address': Web3.to_checksum_address(token_config["pool_address"]),
+                                            'fromBlock': chunk_start,
+                                            'toBlock': chunk_end
+                                        })
+                                        
+                                        if len(all_logs) > 0:
+                                            print(f"✅ [{token_key.upper()}] Found {len(all_logs)} total events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
+                                            
+                                            # Process these as generic events
+                                            for log in all_logs:
+                                                tx_hash = log["transactionHash"].hex()
+                                                
+                                                # Avoid duplicate processing
+                                                if tx_hash in processed_transactions[token_key]:
+                                                    continue
+                                                
+                                                processed_transactions[token_key].add(tx_hash)
+                                                
+                                                # Create a generic event structure
+                                                event = {
+                                                    "transactionHash": log["transactionHash"],
+                                                    "blockNumber": log["blockNumber"],
+                                                    "args": {
+                                                        "amount0": 0,
+                                                        "amount1": 0,
+                                                        "sqrtPriceX96": 0,
+                                                        "liquidity": 0,
+                                                        "tick": 0
+                                                    }
+                                                }
+                                                
+                                                # Get transaction details
+                                                print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
+                                                tx_details = get_transaction_details(tx_hash)
+                                                print(f"✅ [{token_key.upper()}] Transaction details retrieved")
+                                                
+                                                # Format and send message
+                                                message_result = format_swap_message(event, tx_hash, tx_details, token_key)
+                                                
+                                                if isinstance(message_result, tuple):
+                                                    message, direction = message_result
+                                                else:
+                                                    message = message_result
+                                                    direction = "🔄 SWAP"
+                                                
+                                                # Send the message
+                                                try:
+                                                    await bot.send_message(
+                                                        chat_id=group_id,
+                                                        text=message,
+                                                        parse_mode='Markdown',
+                                                        disable_web_page_preview=True
+                                                    )
+                                                    print(f"📤 [{token_key.upper()}] Posted transaction: {tx_hash[:10]}...")
+                                                except Exception as e:
+                                                    print(f"❌ Error sending message for {token_key}: {e}")
+                                                
+                                                # Small delay to avoid rate limits
+                                                await asyncio.sleep(1)
+                                        
+                                        else:
+                                            print(f"✅ [{token_key.upper()}] Found 0 events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
+                                            
+                                    except Exception as e:
+                                        print(f"❌ Error getting all logs for {token_key}: {e}")
+                                        print(f"✅ [{token_key.upper()}] Found 0 events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
+                                else:
+                                    print(f"✅ [{token_key.upper()}] Found {len(swap_events)} events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
+                                    
+                                    for event in swap_events:
+                                        tx_hash = event["transactionHash"].hex()
+                                        
+                                        # Avoid duplicate processing
+                                        if tx_hash in processed_transactions[token_key]:
+                                            continue
+                                        
+                                        processed_transactions[token_key].add(tx_hash)
+                                        
+                                        # Get transaction details
+                                        print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
+                                        tx_details = get_transaction_details(tx_hash)
+                                        print(f"✅ [{token_key.upper()}] Transaction details retrieved")
+                                        
+                                        # Format and send message
+                                        message_result = format_swap_message(event, tx_hash, tx_details, token_key)
+                                        
+                                        if isinstance(message_result, tuple):
+                                            message, direction = message_result
+                                        else:
+                                            message = message_result
+                                            direction = "🔄 SWAP"
+                                        
+                                        # Process both BUY and SELL transactions
+                                        if direction == "🔴 SELL":
+                                            try:
+                                                # Use sell-specific image
+                                                image_path = token_config["sell_image"]
+                                                
+                                                # Send message with image
+                                                with open(image_path, "rb") as img:
+                                                    await bot.send_photo(
+                                                        chat_id=group_id,
+                                                        photo=img,
+                                                        caption=message,
+                                                        parse_mode='Markdown'
+                                                    )
+                                                print(f"📤 [{token_key.upper()}] Posted SELL transaction with image: {tx_hash[:10]}...")
+                                            except Exception as e:
+                                                print(f"❌ Error sending message with image for {token_key}: {e}")
+                                                # Fallback to text-only if image fails
+                                                try:
+                                                    await bot.send_message(
+                                                        chat_id=group_id,
+                                                        text=message,
+                                                        parse_mode='Markdown',
+                                                        disable_web_page_preview=True
+                                                    )
+                                                    print(f"📤 [{token_key.upper()}] Posted SELL transaction (text-only): {tx_hash[:10]}...")
+                                                except Exception as e2:
+                                                    print(f"❌ Error sending text-only message for {token_key}: {e2}")
+                                        elif direction == "🟢 BUY":
+                                            try:
+                                                # Use buy-specific image
+                                                image_path = token_config["buy_image"]
+                                                
+                                                # Send message with image
+                                                with open(image_path, "rb") as img:
+                                                    await bot.send_photo(
+                                                        chat_id=group_id,
+                                                        photo=img,
+                                                        caption=message,
+                                                        parse_mode='Markdown'
+                                                    )
+                                                print(f"📤 [{token_key.upper()}] Posted BUY transaction with image: {tx_hash[:10]}...")
+                                            except Exception as e:
+                                                print(f"❌ Error sending message with image for {token_key}: {e}")
+                                                # Fallback to text-only if image fails
+                                                try:
+                                                    await bot.send_message(
+                                                        chat_id=group_id,
+                                                        text=message,
+                                                        parse_mode='Markdown',
+                                                        disable_web_page_preview=True
+                                                    )
+                                                    print(f"📤 [{token_key.upper()}] Posted BUY transaction (text-only): {tx_hash[:10]}...")
+                                                except Exception as e2:
+                                                    print(f"❌ Error sending text-only message for {token_key}: {e2}")
+                                        else:
+                                            # For other swap types, send text-only
+                                            try:
+                                                await bot.send_message(
+                                                    chat_id=group_id,
+                                                    text=message,
+                                                    parse_mode='Markdown',
+                                                    disable_web_page_preview=True
+                                                )
+                                                print(f"📤 [{token_key.upper()}] Posted SWAP transaction: {tx_hash[:10]}...")
+                                            except Exception as e:
+                                                print(f"❌ Error sending text-only message for {token_key}: {e}")
+                                        
+                                        # Small delay to avoid rate limits
+                                        await asyncio.sleep(1)
+                        else:
+                            # Process all blocks in one call (small range)
+                            estimated_credits = max(10, blocks_to_process * 2)  # Base 10 + 2 per block
+                            print(f"🔍 [{token_key.upper()}] Getting events from blocks {latest_block + 1}-{current_block} ({blocks_to_process} blocks)... (~{estimated_credits} credits)")
+                            
+                            # Try to get Swap events first
                             swap_events = pool_contract.events.Swap.get_logs(
-                                fromBlock=block_num,
-                                toBlock=block_num
+                                fromBlock=latest_block + 1,
+                                toBlock=current_block
                             )
                             
-                            for event in swap_events:
-                                tx_hash = event["transactionHash"].hex()
+                            # If no Swap events, try other event types
+                            if len(swap_events) == 0:
+                                print(f"🔍 [{token_key.upper()}] No Swap events found, checking for other event types...")
                                 
-                                # Avoid duplicate processing
-                                if tx_hash in processed_transactions[token_key]:
-                                    continue
-                                
-                                processed_transactions[token_key].add(tx_hash)
-                                
-                                # Get transaction details
-                                tx_details = get_transaction_details(tx_hash)
-                                
-                                # Format and send message
-                                message_result = format_swap_message(event, tx_hash, tx_details, token_key)
-                                
-                                if isinstance(message_result, tuple):
-                                    message, direction = message_result
-                                else:
-                                    message = message_result
-                                    direction = "🔄 SWAP"
-                                
-                                # Process both BUY and SELL transactions
-                                if direction == "🔴 SELL":
-                                    try:
-                                        # Use sell-specific image
-                                        image_path = token_config["sell_image"]
+                                # Try to get any events from this contract
+                                try:
+                                    all_logs = w3.eth.get_logs({
+                                        'address': Web3.to_checksum_address(token_config["pool_address"]),
+                                        'fromBlock': latest_block + 1,
+                                        'toBlock': current_block
+                                    })
+                                    
+                                    if len(all_logs) > 0:
+                                        print(f"✅ [{token_key.upper()}] Found {len(all_logs)} total events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
                                         
-                                        # Send message with image
-                                        with open(image_path, "rb") as img:
-                                            await bot.send_photo(
-                                                chat_id=group_id,
-                                                photo=img,
-                                                caption=message,
-                                                parse_mode='Markdown'
-                                            )
-                                        print(f"Posted {token_key} SELL transaction with image: {tx_hash}")
-                                    except Exception as e:
-                                        print(f"Error sending message with image for {token_key}: {e}")
-                                        # Fallback to text-only if image fails
-                                        try:
-                                            await bot.send_message(
-                                                chat_id=group_id,
-                                                text=message,
-                                                parse_mode='Markdown',
-                                                disable_web_page_preview=True
-                                            )
-                                            print(f"Posted {token_key} SELL transaction (text-only): {tx_hash}")
-                                        except Exception as e2:
-                                            print(f"Error sending text-only message for {token_key}: {e2}")
-                                elif direction == "🟢 BUY":
-                                    try:
-                                        # Use buy-specific image
-                                        image_path = token_config["buy_image"]
+                                        # Process these as generic events
+                                        for log in all_logs:
+                                            tx_hash = log["transactionHash"].hex()
+                                            
+                                            # Avoid duplicate processing
+                                            if tx_hash in processed_transactions[token_key]:
+                                                continue
+                                            
+                                            processed_transactions[token_key].add(tx_hash)
+                                            
+                                            # Create a generic event structure
+                                            event = {
+                                                "transactionHash": log["transactionHash"],
+                                                "blockNumber": log["blockNumber"],
+                                                "args": {
+                                                    "amount0": 0,
+                                                    "amount1": 0,
+                                                    "sqrtPriceX96": 0,
+                                                    "liquidity": 0,
+                                                    "tick": 0
+                                                }
+                                            }
+                                            
+                                            # Get transaction details
+                                            print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
+                                            tx_details = get_transaction_details(tx_hash)
+                                            print(f"✅ [{token_key.upper()}] Transaction details retrieved")
+                                            
+                                            # Format and send message
+                                            message_result = format_swap_message(event, tx_hash, tx_details, token_key)
+                                            
+                                            if isinstance(message_result, tuple):
+                                                message, direction = message_result
+                                            else:
+                                                message = message_result
+                                                direction = "🔄 SWAP"
+                                            
+                                            # Send the message
+                                            try:
+                                                await bot.send_message(
+                                                    chat_id=group_id,
+                                                    text=message,
+                                                    parse_mode='Markdown',
+                                                    disable_web_page_preview=True
+                                                )
+                                                print(f"📤 [{token_key.upper()}] Posted transaction: {tx_hash[:10]}...")
+                                            except Exception as e:
+                                                print(f"❌ Error sending message for {token_key}: {e}")
+                                            
+                                            # Small delay to avoid rate limits
+                                            await asyncio.sleep(1)
+                                    
+                                    else:
+                                        print(f"✅ [{token_key.upper()}] Found 0 events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
                                         
-                                        # Send message with image
-                                        with open(image_path, "rb") as img:
-                                            await bot.send_photo(
-                                                chat_id=group_id,
-                                                photo=img,
-                                                caption=message,
-                                                parse_mode='Markdown'
-                                            )
-                                        print(f"Posted {token_key} BUY transaction with image: {tx_hash}")
-                                    except Exception as e:
-                                        print(f"Error sending message with image for {token_key}: {e}")
-                                        # Fallback to text-only if image fails
-                                        try:
-                                            await bot.send_message(
-                                                chat_id=group_id,
-                                                text=message,
-                                                parse_mode='Markdown',
-                                                disable_web_page_preview=True
-                                            )
-                                            print(f"Posted {token_key} BUY transaction (text-only): {tx_hash}")
-                                        except Exception as e2:
-                                            print(f"Error sending text-only message for {token_key}: {e2}")
-                                else:
-                                    # For other swap types, send text-only
-                                    try:
-                                        await bot.send_message(
-                                            chat_id=group_id,
-                                            text=message,
-                                            parse_mode='Markdown',
-                                            disable_web_page_preview=True
-                                        )
-                                        print(f"Posted {token_key} SWAP transaction: {tx_hash}")
-                                    except Exception as e:
-                                        print(f"Error sending text-only message for {token_key}: {e}")
-                                
-                                # Small delay to avoid rate limits (increased to reduce API calls)
-                                await asyncio.sleep(5)
-                                
-                        except Exception as e:
-                            if "429" in str(e) or "Too Many Requests" in str(e):
-                                print(f"Rate limited while processing block {block_num} for {token_key}, waiting 30 seconds...")
-                                await asyncio.sleep(30)
-                                break  # Exit the block processing loop
+                                except Exception as e:
+                                    print(f"❌ Error getting all logs for {token_key}: {e}")
+                                    print(f"✅ [{token_key.upper()}] Found 0 events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
                             else:
-                                print(f"Error processing block {block_num} for {token_key}: {e}")
-                                continue
-                    
-                    latest_block = current_block
+                                print(f"✅ [{token_key.upper()}] Found {len(swap_events)} events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
+                                
+                                for event in swap_events:
+                                    tx_hash = event["transactionHash"].hex()
+                                    
+                                    # Avoid duplicate processing
+                                    if tx_hash in processed_transactions[token_key]:
+                                        continue
+                                    
+                                    processed_transactions[token_key].add(tx_hash)
+                                    
+                                    # Get transaction details
+                                    print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
+                                    tx_details = get_transaction_details(tx_hash)
+                                    print(f"✅ [{token_key.upper()}] Transaction details retrieved")
+                                    
+                                    # Format and send message
+                                    message_result = format_swap_message(event, tx_hash, tx_details, token_key)
+                                    
+                                    if isinstance(message_result, tuple):
+                                        message, direction = message_result
+                                    else:
+                                        message = message_result
+                                        direction = "🔄 SWAP"
+                                    
+                                    # Process both BUY and SELL transactions
+                                    if direction == "🔴 SELL":
+                                        try:
+                                            # Use sell-specific image
+                                            image_path = token_config["sell_image"]
+                                            
+                                            # Send message with image
+                                            with open(image_path, "rb") as img:
+                                                await bot.send_photo(
+                                                    chat_id=group_id,
+                                                    photo=img,
+                                                    caption=message,
+                                                    parse_mode='Markdown'
+                                                )
+                                            print(f"📤 [{token_key.upper()}] Posted SELL transaction with image: {tx_hash[:10]}...")
+                                        except Exception as e:
+                                            print(f"❌ Error sending message with image for {token_key}: {e}")
+                                            # Fallback to text-only if image fails
+                                            try:
+                                                await bot.send_message(
+                                                    chat_id=group_id,
+                                                    text=message,
+                                                    parse_mode='Markdown',
+                                                    disable_web_page_preview=True
+                                                )
+                                                print(f"📤 [{token_key.upper()}] Posted SELL transaction (text-only): {tx_hash[:10]}...")
+                                            except Exception as e2:
+                                                print(f"❌ Error sending text-only message for {token_key}: {e2}")
+                                    elif direction == "🟢 BUY":
+                                        try:
+                                            # Use buy-specific image
+                                            image_path = token_config["buy_image"]
+                                            
+                                            # Send message with image
+                                            with open(image_path, "rb") as img:
+                                                await bot.send_photo(
+                                                    chat_id=group_id,
+                                                    photo=img,
+                                                    caption=message,
+                                                    parse_mode='Markdown'
+                                                )
+                                            print(f"📤 [{token_key.upper()}] Posted BUY transaction with image: {tx_hash[:10]}...")
+                                        except Exception as e:
+                                            print(f"❌ Error sending message with image for {token_key}: {e}")
+                                            # Fallback to text-only if image fails
+                                            try:
+                                                await bot.send_message(
+                                                    chat_id=group_id,
+                                                    text=message,
+                                                    parse_mode='Markdown',
+                                                    disable_web_page_preview=True
+                                                )
+                                                print(f"📤 [{token_key.upper()}] Posted BUY transaction (text-only): {tx_hash[:10]}...")
+                                            except Exception as e2:
+                                                print(f"❌ Error sending text-only message for {token_key}: {e2}")
+                                    else:
+                                        # For other swap types, send text-only
+                                        try:
+                                            await bot.send_message(
+                                                chat_id=group_id,
+                                                text=message,
+                                                parse_mode='Markdown',
+                                                disable_web_page_preview=True
+                                            )
+                                            print(f"📤 [{token_key.upper()}] Posted SWAP transaction: {tx_hash[:10]}...")
+                                        except Exception as e:
+                                            print(f"❌ Error sending text-only message for {token_key}: {e}")
+                                    
+                                    # Small delay to avoid rate limits
+                                        await asyncio.sleep(1)
+                        
+                        # Update latest block
+                        latest_block = current_block
+                        
+                    except Exception as e:
+                        if "429" in str(e) or "Too Many Requests" in str(e):
+                            print(f"⚠️ Rate limited while processing events for {token_key}, waiting 30 seconds...")
+                            await asyncio.sleep(30)
+                        else:
+                            print(f"❌ Error processing events for {token_key}: {e}")
+                            await asyncio.sleep(10)
                 
-                # Wait before checking for new blocks (increased delay to reduce rate limiting)
-                await asyncio.sleep(30)  # Check every ~30 seconds
+                # Wait before next poll
+                await asyncio.sleep(polling_interval)
                 
             except Exception as e:
-                print(f"Error in transaction monitoring loop for {token_key}: {e}")
-                await asyncio.sleep(30)  # Wait longer on error
-                
+                print(f"❌ Unexpected error in monitoring loop for {token_key}: {e}")
+                await asyncio.sleep(10)
+    
+    except asyncio.CancelledError:
+        print(f"🛑 Monitoring task cancelled for {token_key}")
     except Exception as e:
-        print(f"Error initializing transaction monitoring for {token_key}: {e}")
+        print(f"❌ Fatal error in monitoring task for {token_key}: {e}")
+    finally:
+        # Clean up task reference
+        if token_key in monitoring_tasks:
+            del monitoring_tasks[token_key]
+        print(f"🏁 Monitoring task ended for {token_key}")
 
 async def show_last_5_transactions(update, context):
     """Command to show last 5 buy/sell transactions for EMP"""
@@ -859,12 +1235,24 @@ async def start_monitoring(update, context):
 
 async def stop_monitoring(update, context):
     """Command to stop EMP transaction monitoring"""
-    global monitoring_groups
+    global monitoring_groups, monitoring_tasks
     
     token_key = "emp"
     
     if token_key in monitoring_groups:
+        # Cancel the monitoring task
+        if token_key in monitoring_tasks:
+            task = monitoring_tasks[token_key]
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass  # Expected when cancelling
+        
+        # Remove from monitoring groups
         del monitoring_groups[token_key]
+        
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="🛑 EMP transaction monitoring stopped.\n\n"
@@ -878,7 +1266,7 @@ async def stop_monitoring(update, context):
 
 async def check_status(update, context):
     """Command to check monitoring status"""
-    global monitoring_groups, processed_transactions
+    global monitoring_groups, processed_transactions, monitoring_tasks
     
     status_text = "📊 **Monitoring Status**\n\n"
     
@@ -903,6 +1291,16 @@ async def check_status(update, context):
             status_text += f"💬 Group ID: {monitoring_groups[token_key]}\n"
             status_text += f"📊 Pool: {token_config['pool_address'][:8]}...{token_config['pool_address'][-6:]}\n"
             status_text += f"🔄 Processed TXs: {len(processed_transactions[token_key])}\n"
+            
+            # Check task status
+            if token_key in monitoring_tasks:
+                task = monitoring_tasks[token_key]
+                if task.done():
+                    status_text += f"⚠️ **Task Status**: Completed/Cancelled\n"
+                else:
+                    status_text += f"✅ **Task Status**: Running\n"
+            else:
+                status_text += f"⚠️ **Task Status**: No task reference\n"
         else:
             status_text += f"❌ **Monitoring Inactive**\n"
             status_text += f"Use `/startmonitor` to begin\n"
@@ -1072,12 +1470,24 @@ async def start_talos_monitoring(update, context):
 
 async def stop_talos_monitoring(update, context):
     """Command to stop Talos transaction monitoring"""
-    global monitoring_groups
+    global monitoring_groups, monitoring_tasks
     
     token_key = "talos"
     
     if token_key in monitoring_groups:
+        # Cancel the monitoring task
+        if token_key in monitoring_tasks:
+            task = monitoring_tasks[token_key]
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass  # Expected when cancelling
+        
+        # Remove from monitoring groups
         del monitoring_groups[token_key]
+        
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="🛑 Talos transaction monitoring stopped.\n\n"
@@ -1481,6 +1891,41 @@ async def send_daily_volume(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Error fetching EMP volume data.")
         return
 
+async def stop_all_monitoring(update, context):
+    """Command to stop all transaction monitoring"""
+    global monitoring_groups, monitoring_tasks
+    
+    stopped_count = 0
+    
+    # Stop all active monitoring
+    for token_key in list(monitoring_groups.keys()):
+        # Cancel the monitoring task
+        if token_key in monitoring_tasks:
+            task = monitoring_tasks[token_key]
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass  # Expected when cancelling
+        
+        # Remove from monitoring groups
+        del monitoring_groups[token_key]
+        stopped_count += 1
+    
+    if stopped_count > 0:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"🛑 Stopped {stopped_count} monitoring task(s).\n\n"
+                 "Use `/startmonitor` to restart EMP monitoring.\n"
+                 "Use `/starttalos` to restart Talos monitoring."
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="ℹ️ No active monitoring to stop."
+        )
+
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("billi", send_price))
 app.add_handler(CommandHandler("price", send_detailed_price))
@@ -1500,6 +1945,7 @@ app.add_handler(CommandHandler("last5talos", show_last_5_talos_transactions))
 app.add_handler(CommandHandler("starttalos", start_talos_monitoring))
 app.add_handler(CommandHandler("stoptalos", stop_talos_monitoring))
 app.add_handler(CommandHandler("testtalos", test_talos_connection))
+app.add_handler(CommandHandler("stopall", stop_all_monitoring))
 
 app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
 
