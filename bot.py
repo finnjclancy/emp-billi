@@ -2008,4 +2008,4 @@ print("Bot started. Use /startmonitor in a group to begin EMP transaction monito
 print("Use /starttalos in a group to begin Talos transaction monitoring.")
 
 # Use polling with drop_pending_updates to avoid conflicts
-app.run_polling()
+app.run_polling(drop_pending_updates=True)
