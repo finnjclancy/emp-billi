@@ -1,0 +1,15 @@
+# Telegram Bot Token (Required)
+# Get this from @BotFather on Telegram
+TOKEN=your_telegram_bot_token_here
+
+# Ethereum Mainnet (for EMP token monitoring)
+# Get this from https://infura.io - create a project and copy the mainnet endpoint
+INFURA_URL=https://mainnet.infura.io/v3/your_infura_project_id
+
+# Arbitrum (for Talos token monitoring)
+# Get this from https://infura.io - create a project and copy the arbitrum endpoint
+ARBITRUM_RPC_URL=https://arbitrum-mainnet.infura.io/v3/your_infura_project_id
+
+# Optional: For better transaction details
+# Get this from https://etherscan.io - create an account and get API key
+ETHERSCAN_API_KEY=your_etherscan_api_key_here 

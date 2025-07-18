@@ -1245,6 +1245,7 @@ async def monitor_transactions(bot, token_key="emp", group_id=None):
 
 async def show_last_5_transactions(update, context):
     """Command to show last 5 buy/sell transactions for EMP"""
+    print(f"📋 Command called: /last5 by user {update.effective_user.id} in chat {update.effective_chat.id}")
     token_key = "emp"
     token_config = TOKENS.get(token_key)
     network = token_config["network"]
@@ -1284,6 +1285,7 @@ async def show_last_5_transactions(update, context):
 
 async def start_monitoring(update, context):
     """Command to start EMP transaction monitoring"""
+    print(f"🚀 Command called: /startmonitor by user {update.effective_user.id} in chat {update.effective_chat.id}")
     global monitoring_groups
     
     token_key = "emp"
@@ -1333,6 +1335,7 @@ async def start_monitoring(update, context):
 
 async def stop_monitoring(update, context):
     """Command to stop EMP transaction monitoring"""
+    print(f"🛑 Command called: /stopmonitor by user {update.effective_user.id} in chat {update.effective_chat.id}")
     global monitoring_groups, monitoring_tasks
     
     token_key = "emp"
@@ -1364,6 +1367,7 @@ async def stop_monitoring(update, context):
 
 async def check_status(update, context):
     """Command to check monitoring status"""
+    print(f"📊 Command called: /status by user {update.effective_user.id} in chat {update.effective_chat.id}")
     global monitoring_groups, processed_transactions, monitoring_tasks
     
     status_text = "📊 **Monitoring Status**\n\n"
@@ -1417,6 +1421,7 @@ async def check_status(update, context):
 
 async def test_connection(update, context):
     """Command to test blockchain connection for EMP"""
+    print(f"🔧 Command called: /test by user {update.effective_user.id} in chat {update.effective_chat.id}")
     token_key = "emp"
     token_config = TOKENS.get(token_key)
     network = token_config["network"]
@@ -1480,6 +1485,7 @@ async def test_connection(update, context):
 # Talos-specific commands
 async def show_last_5_talos_transactions(update, context):
     """Command to show last 5 buy/sell transactions for Talos"""
+    print(f"📋 Command called: /last5talos by user {update.effective_user.id} in chat {update.effective_chat.id}")
     token_key = "talos"
     token_config = TOKENS.get(token_key)
     network = token_config["network"]
@@ -1519,6 +1525,7 @@ async def show_last_5_talos_transactions(update, context):
 
 async def start_talos_monitoring(update, context):
     """Command to start Talos transaction monitoring"""
+    print(f"🚀 Command called: /starttalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
     global monitoring_groups
     
     token_key = "talos"
@@ -1568,6 +1575,7 @@ async def start_talos_monitoring(update, context):
 
 async def stop_talos_monitoring(update, context):
     """Command to stop Talos transaction monitoring"""
+    print(f"🛑 Command called: /stoptalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
     global monitoring_groups, monitoring_tasks
     
     token_key = "talos"
@@ -1599,6 +1607,7 @@ async def stop_talos_monitoring(update, context):
 
 async def test_talos_connection(update, context):
     """Command to test blockchain connection for Talos"""
+    print(f"🔧 Command called: /testtalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
     token_key = "talos"
     token_config = TOKENS.get(token_key)
     network = token_config["network"]
@@ -1704,6 +1713,7 @@ def format_percentage(value):
 
 async def send_price(update, context):
     # Get EMP price using pool contract
+    print(f"💰 Command called: /billi by user {update.effective_user.id} in chat {update.effective_chat.id}")
     try:
         price = get_emp_price_from_pool()
         if price is None:
@@ -1729,6 +1739,7 @@ async def send_price(update, context):
 
 async def send_detailed_price(update, context):
     # Get EMP price using pool contract
+    print(f"📊 Command called: /price by user {update.effective_user.id} in chat {update.effective_chat.id}")
     try:
         price = get_emp_price_from_pool()
         if price is None:
@@ -1757,10 +1768,12 @@ async def send_detailed_price(update, context):
 
 async def handle_wen_commands(update, context):
     if "/" in update.message.text and "wen" in update.message.text.lower():
+        print(f"⏰ Command called: /wen by user {update.effective_user.id} in chat {update.effective_chat.id}")
         await context.bot.send_message(chat_id=update.effective_chat.id, text="next week")
 
 async def send_emp_price(update, context):
     # Get EMP price using pool contract
+    print(f"💎 Command called: /empprice by user {update.effective_user.id} in chat {update.effective_chat.id}")
     try:
         price = get_emp_price_from_pool()
         if price is None:
@@ -1776,6 +1789,7 @@ async def send_emp_price(update, context):
 
 async def send_btc_price(update, context):
     # Get BTC price using ETH price data
+    print(f"₿ Command called: /btcprice by user {update.effective_user.id} in chat {update.effective_chat.id}")
     try:
         price = get_btc_price_from_eth()
         if price is None:
@@ -1791,6 +1805,7 @@ async def send_btc_price(update, context):
 
 async def send_eth_price(update, context):
     # Get ETH price in one API call
+    print(f"Ξ Command called: /ethprice by user {update.effective_user.id} in chat {update.effective_chat.id}")
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
         "vs_currency": "usd",
@@ -1818,6 +1833,7 @@ async def send_eth_price(update, context):
 
 async def send_performance_comparison(update, context):
     # Get ETH data from CoinGecko, EMP and BTC from pools
+    print(f"📈 Command called: /performance by user {update.effective_user.id} in chat {update.effective_chat.id}")
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
         "vs_currency": "usd",
@@ -1902,6 +1918,7 @@ async def send_performance_comparison(update, context):
 
 async def send_daily_volume(update, context):
     """Command to show daily trading volume for EMP"""
+    print(f"📊 Command called: /vol by user {update.effective_user.id} in chat {update.effective_chat.id}")
     # Note: Volume data is not available from Uniswap V3 pool
     # This would require additional API calls to get historical data
     
@@ -1920,6 +1937,7 @@ async def send_daily_volume(update, context):
 
 async def stop_all_monitoring(update, context):
     """Command to stop all transaction monitoring"""
+    print(f"🛑 Command called: /stopall by user {update.effective_user.id} in chat {update.effective_chat.id}")
     global monitoring_groups, monitoring_tasks
     
     stopped_count = 0
