@@ -179,6 +179,106 @@ def eth_usd() -> Optional[float]:
         return prices[0]  # USD price
     return None
 
+def get_emp_price_from_pool() -> Optional[float]:
+    """
+    Get EMP token price using Etherscan API and Uniswap V3 pool contract
+    
+    Returns:
+        EMP price in USD as float or None if failed
+    """
+    try:
+        api_key = os.getenv('ETHERSCAN_API_KEY')
+        base_url = "https://api.etherscan.io/api"
+        pool_address = "0xe092769bc1fa5262D4f48353f90890Dcc339BF80"
+
+        def eth_call(to, data):
+            params = {
+                'module': 'proxy',
+                'action': 'eth_call',
+                'to': to,
+                'data': data,
+                'tag': 'latest',
+                'apikey': api_key
+            }
+            r = requests.get(base_url, params=params, timeout=10)
+            if r.status_code == 200:
+                result = r.json().get('result')
+                return result
+            return None
+
+        # Get slot0 (price info)
+        slot0_data = eth_call(pool_address, '0x3850c7bd')
+        if not slot0_data or slot0_data == '0x':
+            print('❌ Failed to get slot0 or empty response')
+            return None
+        
+        try:
+            sqrtPriceX96 = int(slot0_data[2:66], 16)
+        except (ValueError, IndexError) as e:
+            print(f'❌ Failed to parse sqrtPriceX96: {e}')
+            return None
+
+        # Get token addresses
+        token0_addr = eth_call(pool_address, '0x0dfe1681')
+        token1_addr = eth_call(pool_address, '0xd21220a7')
+        if not token0_addr or not token1_addr:
+            print('❌ Failed to get token addresses')
+            return None
+        
+        token0 = '0x' + token0_addr[-40:]
+        token1 = '0x' + token1_addr[-40:]
+
+        # Get decimals
+        token0_dec = eth_call(token0, '0x313ce567')
+        token1_dec = eth_call(token1, '0x313ce567')
+        if not token0_dec or not token1_dec:
+            print('❌ Failed to get decimals')
+            return None
+        
+        token0_decimals = int(token0_dec, 16)
+        token1_decimals = int(token1_dec, 16)
+
+        # Calculate prices with proper decimal handling
+        price_token1_per_token0 = (sqrtPriceX96 / 2**96) ** 2
+        
+        # Adjust for decimals difference
+        decimal_adjustment = 10 ** (token0_decimals - token1_decimals)
+        price_token1_per_token0 *= decimal_adjustment
+        
+        # Determine which token is ETH/WETH
+        weth_addresses = [
+            '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',  # WETH on Ethereum
+            '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',  # WETH on Arbitrum
+        ]
+        
+        token0_is_weth = token0.lower() in [addr.lower() for addr in weth_addresses]
+        token1_is_weth = token1.lower() in [addr.lower() for addr in weth_addresses]
+        
+        # Get ETH price
+        eth_usd_price = eth_usd()
+        if not eth_usd_price:
+            print("❌ Failed to get ETH price")
+            return None
+        
+        if token0_is_weth:
+            # WETH is token0, EMP is token1
+            emp_per_weth = price_token1_per_token0  # EMP tokens per 1 WETH
+            emp_usd_price = eth_usd_price / emp_per_weth if emp_per_weth != 0 else 0
+        elif token1_is_weth:
+            # WETH is token1, EMP is token0
+            emp_per_weth = 1 / price_token1_per_token0  # EMP tokens per 1 WETH
+            emp_usd_price = eth_usd_price / emp_per_weth if emp_per_weth != 0 else 0
+        else:
+            print("❌ No WETH found in pool")
+            return None
+        
+        print(f"✅ EMP price from pool: ${emp_usd_price:.6f}")
+        return emp_usd_price
+        
+    except Exception as e:
+        print(f"❌ EMP price calculation failed: {e}")
+        return None
+
 def get_cached_prices(token_symbol=None):
     """Get cached prices or fetch new ones if cache is expired"""
     global price_cache, price_cache_timestamp
@@ -199,7 +299,7 @@ def get_cached_prices(token_symbol=None):
             print(f"Using cached prices - EMP: ${emp_price}, ETH: ${eth_price}")
             return emp_price, eth_price
     
-    # Get ETH price using Etherscan API (from price.py)
+    # Get ETH price using Etherscan API
     eth_usd_price = 0
     emp_usd_price = 0
     
@@ -214,20 +314,18 @@ def get_cached_prices(token_symbol=None):
     except Exception as e:
         print(f"❌ Etherscan API failed: {e}")
     
-    # For EMP price, we still need to use CoinGecko since Etherscan doesn't have EMP
+    # For EMP price, use the new pool-based function
     if token_symbol != "T":  # Only get EMP price for EMP transactions
         try:
-            print("🔍 Getting EMP price from CoinGecko API... (~1 credit)")
-            price_url = "https://api.coingecko.com/api/v3/simple/price?ids=empyreal&vs_currencies=usd"
-            response = requests.get(price_url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                emp_usd_price = data.get("empyreal", {}).get("usd", 0)
-                print(f"✅ CoinGecko EMP price: ${emp_usd_price}")
+            print("🔍 Getting EMP price from pool contract... (~1 credit)")
+            emp_price = get_emp_price_from_pool()
+            if emp_price:
+                emp_usd_price = emp_price
+                print(f"✅ Pool-based EMP price: ${emp_usd_price}")
             else:
-                print(f"❌ CoinGecko API error: {response.status_code}")
+                print("❌ Pool-based EMP price failed")
         except Exception as e:
-            print(f"❌ CoinGecko API failed: {e}")
+            print(f"❌ Pool-based EMP price failed: {e}")
     
     # Update cache with whatever we got
     price_cache = {
@@ -1605,25 +1703,13 @@ def format_percentage(value):
     return f"{value:,.0f}"
 
 async def send_price(update, context):
-    # Get EMP data in one API call
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "ids": "empyreal"
-    }
-    
+    # Get EMP price using pool contract
     try:
-        response = requests.get(url, params=params)
-        if response.status_code == 429:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
-            return
-            
-        data = response.json()
-        if not data:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch price data.")
+        price = get_emp_price_from_pool()
+        if price is None:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP price from pool.")
             return
         
-        price = data[0]["current_price"]
         ret = get_return(price, TARGET_PRICE)
 
         text = (
@@ -1642,26 +1728,13 @@ async def send_price(update, context):
         return
 
 async def send_detailed_price(update, context):
-    # Get EMP data in one API call
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "ids": "empyreal"
-    }
-    
+    # Get EMP price using pool contract
     try:
-        response = requests.get(url, params=params)
-        if response.status_code == 429:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
-            return
-            
-        data = response.json()
-        if not data:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch price data.")
+        price = get_emp_price_from_pool()
+        if price is None:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP price from pool.")
             return
         
-        coin_data = data[0]
-        price = coin_data["current_price"]
         ret = get_return(price, TARGET_PRICE)
 
         # Format large numbers with commas
@@ -1671,12 +1744,10 @@ async def send_detailed_price(update, context):
         text = (
             f"$EMP price update:\n\n"
             f"💸 bearish at: ${price:.2f}\n"
-            f"{'🟢' if coin_data['price_change_percentage_24h'] >= 0 else '🔴'} 24h change: ${coin_data['price_change_24h']:.2f} ({coin_data['price_change_percentage_24h']:.2f}%)\n\n"
-            f"📈 24h volume: ${format_number(coin_data['total_volume'])}\n\n"
             f"🎯 next week price: ${TARGET_PRICE:,}\n"
             f"📈 guaranteed return: {format_percentage(ret)}%\n\n"
-            f"🏆 rank: #{coin_data['market_cap_rank']}\n"
-            f"📊 market cap: ${format_number(coin_data['market_cap'])}\n"
+            f"📊 Price from Uniswap V3 Pool\n"
+            f"📍 Pool: 0xe092769bc1fa5262D4f48353f90890Dcc339BF80\n"
         )
 
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
@@ -1689,25 +1760,13 @@ async def handle_wen_commands(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="next week")
 
 async def send_emp_price(update, context):
-    # Get EMP price in one API call
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "ids": "empyreal"
-    }
-    
+    # Get EMP price using pool contract
     try:
-        response = requests.get(url, params=params)
-        if response.status_code == 429:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
-            return
-            
-        data = response.json()
-        if not data:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP price.")
+        price = get_emp_price_from_pool()
+        if price is None:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP price from pool.")
             return
         
-        price = data[0]["current_price"]
         text = f"💎 $EMP: ${price:,.2f}"
         
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
@@ -1716,25 +1775,13 @@ async def send_emp_price(update, context):
         return
 
 async def send_btc_price(update, context):
-    # Get BTC price in one API call
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "ids": "bitcoin"
-    }
-    
+    # Get BTC price using ETH price data
     try:
-        response = requests.get(url, params=params)
-        if response.status_code == 429:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
-            return
-            
-        data = response.json()
-        if not data:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch BTC price.")
+        price = get_btc_price_from_eth()
+        if price is None:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch BTC price from ETH data.")
             return
         
-        price = data[0]["current_price"]
         text = f"₿ Bitcoin: ${price:,.2f}"
         
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
@@ -1770,11 +1817,11 @@ async def send_eth_price(update, context):
         return
 
 async def send_performance_comparison(update, context):
-    # Get data for all three coins in one API call
+    # Get ETH data from CoinGecko, EMP and BTC from pools
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
         "vs_currency": "usd",
-        "ids": "bitcoin,ethereum,empyreal"
+        "ids": "ethereum"
     }
     
     try:
@@ -1784,35 +1831,47 @@ async def send_performance_comparison(update, context):
             return
             
         data = response.json()
-        if not data or len(data) < 3:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch market data. Please try again.")
+        if not data or len(data) < 1:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch ETH market data. Please try again.")
+            return
+        
+        # Get EMP price from pool and BTC price from ETH data
+        emp_price = get_emp_price_from_pool()
+        btc_price = get_btc_price_from_eth()
+        
+        if emp_price is None:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch EMP price from pool.")
+            return
+        
+        if btc_price is None:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch BTC price from ETH data.")
             return
         
         # Organize data by coin
         coin_data = {}
+        
+        # ETH data from CoinGecko
         for coin in data:
-            if coin["id"] == "bitcoin":
-                coin_data["bitcoin"] = {
-                    "price": coin["current_price"],
-                    "change_24h": coin["price_change_percentage_24h"],
-                    "price_change_24h": coin["price_change_24h"]
-                }
-            elif coin["id"] == "ethereum":
+            if coin["id"] == "ethereum":
                 coin_data["ethereum"] = {
                     "price": coin["current_price"],
                     "change_24h": coin["price_change_percentage_24h"],
                     "price_change_24h": coin["price_change_24h"]
                 }
-            elif coin["id"] == "empyreal":
-                coin_data["empyreal"] = {
-                    "price": coin["current_price"],
-                    "change_24h": coin["price_change_percentage_24h"],
-                    "price_change_24h": coin["price_change_24h"]
-                }
         
-        if len(coin_data) < 3:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch all required data. Please try again.")
-            return
+        # Add EMP and BTC data from pools
+        coin_data["empyreal"] = {
+            "price": emp_price,
+            "change_24h": 0,  # Pool doesn't provide 24h change
+            "price_change_24h": 0
+        }
+        
+        coin_data["bitcoin"] = {
+            "price": btc_price,
+            "change_24h": 0,  # Pool doesn't provide 24h change
+            "price_change_24h": 0
+        }
+        
     except Exception as e:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Error fetching market data. Please try again.")
         return
@@ -1824,72 +1883,40 @@ async def send_performance_comparison(update, context):
     def format_percent(value):
         return f"{value:+.2f}%" if value >= 0 else f"{value:.2f}%"
     
-    # Calculate EMP's performance relative to BTC and ETH
-    emp_percent = coin_data["empyreal"]["change_24h"]
-    emp_vs_btc = emp_percent - coin_data["bitcoin"]["change_24h"]
-    emp_vs_eth = emp_percent - coin_data["ethereum"]["change_24h"]
-    
     text = (
-        f"📊 24h Performance Comparison:\n\n"
-        f"💰 Price:\n"
+        f"📊 Price Comparison:\n\n"
+        f"💰 Current Prices:\n"
         f"₿ Bitcoin: ${coin_data['bitcoin']['price']:,.2f}\n"
         f"Ξ Ethereum: ${coin_data['ethereum']['price']:,.2f}\n"
         f"💎 EMP: ${coin_data['empyreal']['price']:,.2f}\n\n"
-        f"📈 24h Performance:\n"
-        f"₿ Bitcoin: ${coin_data['bitcoin']['price_change_24h']:+.2f} ({format_percent(coin_data['bitcoin']['change_24h'])})\n"
+        f"📈 24h Performance (ETH only):\n"
         f"Ξ Ethereum: ${coin_data['ethereum']['price_change_24h']:+.2f} ({format_percent(coin_data['ethereum']['change_24h'])})\n"
-        f"💎 EMP: ${coin_data['empyreal']['price_change_24h']:+.2f} ({format_percent(coin_data['empyreal']['change_24h'])})\n\n"
-        f"📊 EMP vs Others:(24h)\n"
-        f"💎 EMP vs ₿ Bitcoin: {format_percent(emp_vs_btc)}\n"
-        f"💎 EMP vs Ξ Ethereum: {format_percent(emp_vs_eth)}\n\n"
+        f"₿ Bitcoin: Price calculated from ETH/BTC ratio\n"
+        f"💎 EMP: Price from Uniswap V3 Pool\n\n"
+        f"📊 Price Sources:\n"
+        f"📍 BTC: Calculated from ETH price data\n"
+        f"📍 EMP Pool: 0xe092769bc1fa5262D4f48353f90890Dcc339BF80\n"
     )
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
 
 async def send_daily_volume(update, context):
     """Command to show daily trading volume for EMP"""
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "ids": "empyreal"
-    }
+    # Note: Volume data is not available from Uniswap V3 pool
+    # This would require additional API calls to get historical data
     
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 429:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Rate limit exceeded. Please try again in a minute.")
-            return
-        elif response.status_code != 200:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ API error: {response.status_code}. Please try again later.")
-            return
-            
-        data = response.json()
-        if not data:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Could not fetch EMP volume data.")
-            return
-        
-        volume_24h = data[0]["total_volume"]
-        
-        # Format the volume with appropriate units
-        if volume_24h >= 1_000_000_000:
-            formatted_volume = f"${volume_24h/1_000_000_000:.2f}B"
-        elif volume_24h >= 1_000_000:
-            formatted_volume = f"${volume_24h/1_000_000:.2f}M"
-        elif volume_24h >= 1_000:
-            formatted_volume = f"${volume_24h/1_000:.2f}K"
-        else:
-            formatted_volume = f"${volume_24h:.2f}"
-        
-        text = f"💎 **$EMP 24h Volume:** {formatted_volume}"
-        
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
-    except requests.exceptions.Timeout:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="⏰ Request timeout. Please try again.")
-        return
-    except Exception as e:
-        print(f"Error in send_daily_volume: {e}")
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Error fetching EMP volume data.")
-        return
+    text = (
+        f"💎 **$EMP Volume Information:**\n\n"
+        f"📊 Volume data is not available from the Uniswap V3 pool.\n"
+        f"📍 Pool: 0xe092769bc1fa5262D4f48353f90890Dcc339BF80\n\n"
+        f"ℹ️ To get volume data, you would need to:\n"
+        f"• Query historical swap events\n"
+        f"• Calculate volume from transaction data\n"
+        f"• Use a different API service\n\n"
+        f"💡 Current price is available via /emp command"
+    )
+    
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
 
 async def stop_all_monitoring(update, context):
     """Command to stop all transaction monitoring"""
@@ -1925,6 +1952,32 @@ async def stop_all_monitoring(update, context):
             chat_id=update.effective_chat.id,
             text="ℹ️ No active monitoring to stop."
         )
+
+def get_btc_price_from_eth() -> Optional[float]:
+    """
+    Get BTC price using ETH price data from Etherscan API
+    
+    Returns:
+        BTC price in USD as float or None if failed
+    """
+    try:
+        # Get ETH price data (includes ETH/BTC ratio)
+        prices = get_eth_price()
+        if not prices:
+            print("❌ Failed to get ETH price data")
+            return None
+        
+        eth_usd_price, eth_btc_price = prices
+        
+        # Calculate BTC price: ETH_USD / ETH_BTC = BTC_USD
+        btc_usd_price = eth_usd_price / eth_btc_price
+        
+        print(f"✅ BTC price from ETH: ${btc_usd_price:.6f}")
+        return btc_usd_price
+        
+    except Exception as e:
+        print(f"❌ BTC price calculation failed: {e}")
+        return None
 
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("billi", send_price))
