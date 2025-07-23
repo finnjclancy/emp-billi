@@ -5,8 +5,8 @@ btcprice - Get Bitcoin price
 ethprice - Get Ethereum price
 performance - Compare $EMP, BTC, and ETH 24h performance
 vol - Get daily trading volume for $EMP
-startmonitor - Start monitoring EMP Uniswap transactions in this group
-stopmonitor - Stop EMP transaction monitoring
+startemp - Start monitoring EMP Uniswap transactions in this group
+stopemp - Stop EMP transaction monitoring
 status - Check monitoring status and configuration
 test - Test blockchain connection and EMP pool contract
 last5 - Show last 5 EMP buy/sell transactions with summary

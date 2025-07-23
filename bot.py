@@ -1,1702 +1,28 @@
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
-import requests
-import dotenv
-import os
 import asyncio
-import json
+import requests
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 from web3 import Web3
-from datetime import datetime
-import time
-from typing import Optional
 
-dotenv.load_dotenv()
+# Import our modular components
+from config import TOKEN, TARGET_PRICE, IMAGE_PATH, validate_config, get_token_config, get_all_token_keys
+from price_utils import get_emp_price_from_pool, get_btc_price_from_eth, get_return, format_percentage
+from transaction_utils import get_last_5_transactions, format_last_5_transactions
+from monitoring import monitor_transactions, monitoring_groups, monitoring_tasks, get_w3_connection, get_monitoring_status
 
-TOKEN = os.getenv("TOKEN")
-SYMBOL = "empyreal"
-TARGET_PRICE = 3333
-IMAGE_PATH = "logo.jpg"
+# Initialize Web3 connections
+w3_connections = {}
+from config import INFURA_URL, ARBITRUM_RPC_URL
+if INFURA_URL:
+    w3_connections["ethereum"] = Web3(Web3.HTTPProvider(INFURA_URL))
+if ARBITRUM_RPC_URL:
+    w3_connections["arbitrum"] = Web3(Web3.HTTPProvider(ARBITRUM_RPC_URL))
 
-# Token configurations
-TOKENS = {
-    "emp": {
-        "name": "Empyreal",
-        "symbol": "EMP",
-        "token_address": "0xE9F84dE637E8C5C76c4c85C3C5C5C5C5C5C5C5C5C5",  # EMP token address (placeholder)
-        "pool_address": "0xe092769bc1fa5262D4f48353f90890Dcc339BF80",
-        "network": "ethereum",
-        "chainid": 1,  # Ethereum chain ID
-        "rpc_url": os.getenv("INFURA_URL"),
-        "explorer_url": "https://etherscan.io",
-        "target_price": 3333,
-        "logo_path": "logo.jpg",
-        "buy_image": "buy.jpg",
-        "sell_image": "sold.jpg"
-    },
-    "talos": {
-        "name": "Talos",
-        "symbol": "T",
-        "token_address": "0x30a538eFFD91ACeFb1b12CE9Bc0074eD18c9dFc9",  # Talos token address
-        "pool_address": "0xdaAe914e4Bae2AAe4f536006C353117B90Fb37e3",  # Talos pool address
-        "network": "arbitrum",
-        "chainid": 42161,  # Arbitrum chain ID
-        "rpc_url": os.getenv("ARBITRUM_RPC_URL"),
-        "explorer_url": "https://arbiscan.io",
-        "target_price": 1000,  # You can adjust this
-        "logo_path": "logo.jpg",  # You can add a Talos logo later
-        "buy_image": "buy.jpg",
-        "sell_image": "sold.jpg"
-    }
-}
-
-# Environment variables
-INFURA_URL = os.getenv("INFURA_URL")
-ARBITRUM_RPC_URL = os.getenv("ARBITRUM_RPC_URL")
-ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY")
-
-def unified_etherscan_api_call(module, action, chainid=1, **params):
-    """
-    Make a unified Etherscan V2 API call
-    
-    Args:
-        module: API module (e.g., 'proxy', 'logs', 'stats')
-        action: API action (e.g., 'eth_getTransactionByHash', 'getLogs', 'ethprice')
-        chainid: Chain ID (1 for Ethereum, 42161 for Arbitrum, etc.)
-        **params: Additional parameters for the API call
-    
-    Returns:
-        API response data or None if failed
-    """
-    if not ETHERSCAN_API_KEY:
-        print("No Etherscan API key configured")
-        return None
-    
-    url = "https://api.etherscan.io/v2/api"
-    params = {
-        "chainid": chainid,
-        "module": module,
-        "action": action,
-        "apikey": ETHERSCAN_API_KEY,
-        **params
-    }
-    
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "1":
-                return data.get("result")
-            else:
-                print(f"Etherscan API Error: {data.get('message', 'Unknown error')}")
-                return None
-        else:
-            print(f"Etherscan API HTTP Error: {response.status_code}")
-            return None
-    except Exception as e:
-        print(f"Etherscan API Error: {e}")
-        return None
-
-# Track processed transactions to avoid duplicates (per token)
-processed_transactions = {
-    "emp": set(),
-    "talos": set()
-}
-
-# Simple price cache to reduce API calls
-price_cache = {}
-price_cache_timestamp = 0
-CACHE_DURATION = 60  # Cache prices for 60 seconds
-
-def get_eth_price() -> Optional[tuple[float, float]]:
-    """
-    Get current ETH price in USD and BTC using unified Etherscan V2 API
-    
-    Returns:
-        Tuple of (USD price, BTC price) or None if failed
-        Example: (3428.49, 0.02876339)
-    """
-    try:
-        result = unified_etherscan_api_call(
-            module="stats",
-            action="ethprice",
-            chainid=1  # Use Ethereum for price data
-        )
-        
-        if result:
-            return (float(result['ethusd']), float(result['ethbtc']))
-        else:
-            print("ETH Price API Error: No result returned")
-            return None
-            
-    except Exception as e:
-        print(f"ETH Price Error: {e}")
-        return None
-
-def eth_usd() -> Optional[float]:
-    """
-    Get current ETH price in USD
-    
-    Returns:
-        ETH price in USD as float or None if failed
-        Example: 3411.23
-    """
-    prices = get_eth_price()
-    if prices:
-        return prices[0]  # USD price
-    return None
-
-def get_emp_price_from_pool() -> Optional[float]:
-    """
-    Get EMP token price using Etherscan API and Uniswap V3 pool contract
-    
-    Returns:
-        EMP price in USD as float or None if failed
-    """
-    try:
-        api_key = os.getenv('ETHERSCAN_API_KEY')
-        base_url = "https://api.etherscan.io/api"
-        pool_address = "0xe092769bc1fa5262D4f48353f90890Dcc339BF80"
-
-        def eth_call(to, data):
-            params = {
-                'module': 'proxy',
-                'action': 'eth_call',
-                'to': to,
-                'data': data,
-                'tag': 'latest',
-                'apikey': api_key
-            }
-            r = requests.get(base_url, params=params, timeout=10)
-            if r.status_code == 200:
-                result = r.json().get('result')
-                return result
-            return None
-
-        # Get slot0 (price info)
-        slot0_data = eth_call(pool_address, '0x3850c7bd')
-        if not slot0_data or slot0_data == '0x':
-            print('❌ Failed to get slot0 or empty response')
-            return None
-        
-        try:
-            sqrtPriceX96 = int(slot0_data[2:66], 16)
-        except (ValueError, IndexError) as e:
-            print(f'❌ Failed to parse sqrtPriceX96: {e}')
-            return None
-
-        # Get token addresses
-        token0_addr = eth_call(pool_address, '0x0dfe1681')
-        token1_addr = eth_call(pool_address, '0xd21220a7')
-        if not token0_addr or not token1_addr:
-            print('❌ Failed to get token addresses')
-            return None
-        
-        token0 = '0x' + token0_addr[-40:]
-        token1 = '0x' + token1_addr[-40:]
-
-        # Get decimals
-        token0_dec = eth_call(token0, '0x313ce567')
-        token1_dec = eth_call(token1, '0x313ce567')
-        if not token0_dec or not token1_dec:
-            print('❌ Failed to get decimals')
-            return None
-        
-        token0_decimals = int(token0_dec, 16)
-        token1_decimals = int(token1_dec, 16)
-
-        # Calculate prices with proper decimal handling
-        price_token1_per_token0 = (sqrtPriceX96 / 2**96) ** 2
-        
-        # Adjust for decimals difference
-        decimal_adjustment = 10 ** (token0_decimals - token1_decimals)
-        price_token1_per_token0 *= decimal_adjustment
-        
-        # Determine which token is ETH/WETH
-        weth_addresses = [
-            '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',  # WETH on Ethereum
-            '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',  # WETH on Arbitrum
-        ]
-        
-        token0_is_weth = token0.lower() in [addr.lower() for addr in weth_addresses]
-        token1_is_weth = token1.lower() in [addr.lower() for addr in weth_addresses]
-        
-        # Get ETH price
-        eth_usd_price = eth_usd()
-        if not eth_usd_price:
-            print("❌ Failed to get ETH price")
-            return None
-        
-        if token0_is_weth:
-            # WETH is token0, EMP is token1
-            emp_per_weth = price_token1_per_token0  # EMP tokens per 1 WETH
-            emp_usd_price = eth_usd_price / emp_per_weth if emp_per_weth != 0 else 0
-        elif token1_is_weth:
-            # WETH is token1, EMP is token0
-            emp_per_weth = 1 / price_token1_per_token0  # EMP tokens per 1 WETH
-            emp_usd_price = eth_usd_price / emp_per_weth if emp_per_weth != 0 else 0
-        else:
-            print("❌ No WETH found in pool")
-            return None
-        
-        print(f"✅ EMP price from pool: ${emp_usd_price:.6f}")
-        return emp_usd_price
-        
-    except Exception as e:
-        print(f"❌ EMP price calculation failed: {e}")
-        return None
-
-def get_cached_prices(token_symbol=None):
-    """Get cached prices or fetch new ones if cache is expired"""
-    global price_cache, price_cache_timestamp
-    
-    current_time = time.time()
-    
-    # Return cached prices if still valid
-    if current_time - price_cache_timestamp < CACHE_DURATION and price_cache:
-        if token_symbol == "T":
-            # For Talos, we need ETH price for Arbitrum
-            eth_price = price_cache.get("eth_usd_price", 0)
-            print(f"Using cached prices - ETH: ${eth_price}")
-            return 0, eth_price  # Return 0 for token price, ETH price for calculations
-        else:
-            # For EMP, return both prices
-            emp_price = price_cache.get("emp_usd_price", 0)
-            eth_price = price_cache.get("eth_usd_price", 0)
-            print(f"Using cached prices - EMP: ${emp_price}, ETH: ${eth_price}")
-            return emp_price, eth_price
-    
-    # Get ETH price using Etherscan API
-    eth_usd_price = 0
-    emp_usd_price = 0
-    
-    try:
-        print("🔍 Getting ETH price from Etherscan API... (~1 credit)")
-        eth_price = eth_usd()
-        if eth_price:
-            eth_usd_price = eth_price
-            print(f"✅ Etherscan ETH price: ${eth_usd_price}")
-        else:
-            print("❌ Etherscan ETH price failed")
-    except Exception as e:
-        print(f"❌ Etherscan API failed: {e}")
-    
-    # For EMP price, use the new pool-based function
-    if token_symbol != "T":  # Only get EMP price for EMP transactions
-        try:
-            print("🔍 Getting EMP price from pool contract... (~1 credit)")
-            emp_price = get_emp_price_from_pool()
-            if emp_price:
-                emp_usd_price = emp_price
-                print(f"✅ Pool-based EMP price: ${emp_usd_price}")
-            else:
-                print("❌ Pool-based EMP price failed")
-        except Exception as e:
-            print(f"❌ Pool-based EMP price failed: {e}")
-    
-    # Update cache with whatever we got
-    price_cache = {
-        "emp_usd_price": emp_usd_price,
-        "eth_usd_price": eth_usd_price
-    }
-    price_cache_timestamp = current_time
-    
-    if token_symbol == "T":
-        print(f"Final prices - ETH: ${eth_usd_price}")
-        return 0, eth_usd_price  # Return 0 for token price, ETH price for calculations
-    else:
-        print(f"Final prices - EMP: ${emp_usd_price}, ETH: ${eth_usd_price}")
-        return emp_usd_price, eth_usd_price
-
-def get_transaction_details(tx_hash, token_key="emp"):
-    """Get transaction details from unified Etherscan V2 API"""
-    token_config = TOKENS.get(token_key)
-    if not token_config:
-        print(f"Token configuration not found for {token_key}")
-        return None
-    
-    chainid = token_config.get("chainid", 1)  # Default to Ethereum if not specified
-    
-    return unified_etherscan_api_call(
-        module="proxy",
-        action="eth_getTransactionByHash",
-        chainid=chainid,
-        txhash=tx_hash
-    )
-
-def get_last_5_transactions(token_key="emp"):
-    """Get the last 5 buy/sell transactions from the Uniswap pool for a specific token"""
-    token_config = TOKENS.get(token_key)
-    if not token_config:
-        print(f"Token configuration not found for {token_key}")
-        return None
-    
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    
-    if not w3 or not ETHERSCAN_API_KEY:
-        return None
-    
-    try:
-        # Create contract instance
-        pool_contract = w3.eth.contract(
-            address=Web3.to_checksum_address(token_config["pool_address"]),
-            abi=UNISWAP_POOL_ABI
-        )
-        
-        # Get latest block with rate limiting
-        try:
-            latest_block = w3.eth.block_number
-        except Exception as e:
-            if "429" in str(e) or "Too Many Requests" in str(e):
-                print(f"Rate limited in get_last_5_transactions for {token_key}")
-                return None
-            else:
-                print(f"Error getting block number in get_last_5_transactions for {token_key}: {e}")
-                return None
-        
-        # Search for recent events (go back more blocks to ensure we get enough)
-        search_blocks = 5000  # Search last 5000 blocks
-        from_block = latest_block - search_blocks
-        
-        # Get swap events with rate limiting
-        try:
-            swap_events = pool_contract.events.Swap.get_logs(
-                fromBlock=from_block,
-                toBlock=latest_block
-            )
-        except Exception as e:
-            if "429" in str(e) or "Too Many Requests" in str(e):
-                print(f"Rate limited while getting swap events for {token_key}")
-                return None
-            else:
-                print(f"Error getting swap events for {token_key}: {e}")
-                return None
-        
-        # Sort by block number (newest first)
-        sorted_events = sorted(swap_events, key=lambda x: x['blockNumber'], reverse=True)
-        
-        # Filter for buy/sell transactions only
-        buy_sell_events = []
-        for event in sorted_events:
-            amount0 = event["args"]["amount0"]
-            amount1 = event["args"]["amount1"]
-            
-            # Check if it's a buy (ETH -> Token) or sell (Token -> ETH)
-            if (amount0 < 0 and amount1 > 0) or (amount0 > 0 and amount1 < 0):
-                buy_sell_events.append(event)
-                if len(buy_sell_events) >= 5:  # Stop after finding 5
-                    break
-        
-        return buy_sell_events[:5]
-        
-    except Exception as e:
-        print(f"Error fetching recent transactions for {token_key}: {e}")
-        return None
-
-def format_last_5_transactions(transactions, token_key="emp"):
-    """Format the last 5 transactions into a readable message for a specific token"""
-    if not transactions:
-        return "❌ No recent buy/sell transactions found."
-    
-    token_config = TOKENS.get(token_key)
-    if not token_config:
-        return "❌ Token configuration not found."
-    
-    token_symbol = token_config["symbol"]
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    explorer_url = token_config["explorer_url"]
-    
-    # Get current prices using cache to reduce API calls
-    if token_symbol == "T":
-        # For Talos, we only need ETH price for Arbitrum
-        token_usd_price, eth_usd_price = get_cached_prices("T")
-    else:
-        # For EMP, get both prices
-        token_usd_price, eth_usd_price = get_cached_prices()
-    
-    # Process each transaction
-    transaction_details = []
-    total_bought = 0
-    total_sold = 0
-    buy_count = 0
-    sell_count = 0
-    
-    for event in transactions:
-        try:
-            # Extract data
-            sender = event["args"]["sender"]
-            amount0 = event["args"]["amount0"]
-            amount1 = event["args"]["amount1"]
-            tx_hash = event["transactionHash"].hex()
-            block_number = event["blockNumber"]
-            
-            # Get block timestamp
-            try:
-                block = w3.eth.get_block(block_number)
-                timestamp = datetime.fromtimestamp(block.timestamp)
-            except:
-                timestamp = datetime.now()
-            
-            # Convert amounts
-            token_amount = abs(amount0) / (10 ** 18)
-            eth_amount = abs(amount1) / (10 ** 18)
-            
-            # Determine direction
-            if amount0 > 0 and amount1 < 0:
-                # SELL Token
-                direction = f"🔴 SOLD ${token_symbol}"
-                action_emojis = ""
-                usd_value = eth_amount * eth_usd_price  # Use ETH amount for USD value
-                print(f"Last5 SELL - eth_amount: {eth_amount}, eth_usd_price: ${eth_usd_price}, usd_value: ${usd_value}")
-                
-                # Calculate actual price per token from the transaction
-                if token_amount > 0 and eth_usd_price > 0:
-                    actual_price_per_token = usd_value / token_amount
-                else:
-                    actual_price_per_token = token_usd_price  # Fallback to current price
-                
-                emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0)) if usd_value > 0 else 1
-                for i in range(emoji_count):
-                    if i % 2 == 0:
-                        action_emojis += "🍆"
-                    else:
-                        action_emojis += "🍌"
-                
-                total_sold += usd_value
-                sell_count += 1
-                
-                # Format detail based on whether we have USD prices
-                if eth_usd_price > 0:
-                    detail = (
-                        f"{direction}\n\n"
-                        f"{action_emojis}\n\n"
-                        f"💰 ${usd_value:.2f} ({eth_amount:.2f} ETH)\n"
-                        f"💎 {token_amount:.3f} ${token_symbol}\n"
-                        f"💵 ${actual_price_per_token:.2f} per {token_symbol}\n"
-                        f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"🔗 [View TX]({explorer_url}/tx/{tx_hash})\n"
-                    )
-                else:
-                    detail = (
-                        f"{direction}\n\n"
-                        f"{action_emojis}\n\n"
-                        f"💰 {eth_amount:.2f} ETH\n"
-                        f"💎 {token_amount:.3f} ${token_symbol}\n"
-                        f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"🔗 [View TX]({explorer_url}/tx/{tx_hash})\n"
-                    )
-                
-            elif amount0 < 0 and amount1 > 0:
-                # BUY Token
-                direction = f"🟢 BOUGHT ${token_symbol}"
-                action_emojis = ""
-                usd_value = eth_amount * eth_usd_price
-                print(f"Last5 BUY - eth_amount: {eth_amount}, eth_usd_price: ${eth_usd_price}, usd_value: ${usd_value}")
-                
-                # Calculate actual price per token from the transaction
-                if token_amount > 0 and eth_usd_price > 0:
-                    actual_price_per_token = usd_value / token_amount
-                else:
-                    actual_price_per_token = token_usd_price  # Fallback to current price
-                
-                emoji_count = max(1, int(usd_value / 50) + (1 if usd_value % 50 > 0 else 0)) if usd_value > 0 else 1
-                for i in range(emoji_count):
-                    if i % 2 == 0:
-                        action_emojis += "🍑"
-                    else:
-                        action_emojis += "🍒"
-                
-                total_bought += usd_value
-                buy_count += 1
-                
-                # Format detail based on whether we have USD prices
-                if eth_usd_price > 0:
-                    detail = (
-                        f"{direction}\n\n"
-                        f"{action_emojis}\n\n"
-                        f"💰 ${usd_value:.2f} ({eth_amount:.2f} ETH)\n"
-                        f"💎 {token_amount:.3f} ${token_symbol}\n"
-                        f"💵 ${actual_price_per_token:.2f} per {token_symbol}\n"
-                        f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"🔗 [View TX]({explorer_url}/tx/{tx_hash})\n"
-                    )
-                else:
-                    detail = (
-                        f"{direction}\n\n"
-                        f"{action_emojis}\n\n"
-                        f"💰 {eth_amount:.2f} ETH\n"
-                        f"💎 {token_amount:.3f} ${token_symbol}\n"
-                        f"⏰ {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"🔗 [View TX]({explorer_url}/tx/{tx_hash})\n"
-                    )
-            
-            transaction_details.append(detail)
-            
-        except Exception as e:
-            print(f"Error processing transaction: {e}")
-            continue
-    
-    # Calculate summary
-    total_transactions = buy_count + sell_count
-    buy_percentage = (buy_count / total_transactions * 100) if total_transactions > 0 else 0
-    net_buying = total_bought - total_sold
-    total_volume = total_bought + total_sold
-    
-    # Create summary
-    summary = (
-        f"📊 **LAST 5 {token_symbol} TRANSACTIONS SUMMARY**\n\n"
-        f"🟢 **{buy_count} Buys** ({buy_percentage:.1f}%)\n"
-        f"🔴 **{sell_count} Sells** ({100-buy_percentage:.1f}%)\n\n"
-        f"💰 **${total_bought:,.0f} Bought**\n"
-        f"💰 **${total_sold:,.0f} Sold**\n"
-        f"📈 **${net_buying:+,.0f} Net Buying** ({'+' if net_buying >= 0 else ''}${net_buying:,.0f})\n"
-        f"📊 **${total_volume:,.0f} Total Volume**\n"
-    )
-    
-    # Combine all details with numbered transactions
-    numbered_details = []
-    for i, detail in enumerate(transaction_details, 1):
-        numbered_details.append(f"**Transaction {i}:**\n{detail}")
-    
-    full_message = "\n\n----------------------\n\n".join(numbered_details) + "\n\n----------------------\n\n" + summary
-    
-    return full_message
-
-def get_token_order(pool_address, token_address, network):
-    """
-    Determine which token is token0 and which is token1 in the pool
-    Returns: 'token0' if the tracked token is token0, 'token1' if it's token1
-    """
-    try:
-        w3 = w3_connections.get(network)
-        if not w3:
-            return None
-            
-        # Create pool contract instance
-        pool_contract = w3.eth.contract(
-            address=Web3.to_checksum_address(pool_address),
-            abi=UNISWAP_POOL_ABI
-        )
-        
-        # Get token0 and token1 addresses
-        token0_address = pool_contract.functions.token0().call()
-        token1_address = pool_contract.functions.token1().call()
-        
-        print(f"🔍 Pool {pool_address}:")
-        print(f"  Token0: {token0_address}")
-        print(f"  Token1: {token1_address}")
-        print(f"  Tracked Token: {token_address}")
-        
-        # Compare addresses (case-insensitive)
-        if token0_address.lower() == token_address.lower():
-            print(f"✅ Tracked token is Token0")
-            return 'token0'
-        elif token1_address.lower() == token_address.lower():
-            print(f"✅ Tracked token is Token1")
-            return 'token1'
-        else:
-            print(f"❌ Tracked token not found in pool!")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Error getting token order: {e}")
-        return None
-
-def format_swap_message(swap_event, tx_hash, tx_details=None, token_key="emp"):
-    """Format a swap event into a readable message for a specific token"""
-    try:
-        # --- 1. Get Token Configuration ---
-        token_config = TOKENS.get(token_key)
-        if not token_config:
-            return f"🔄 **New Swap Detected**\n\n🔗 [View Transaction](https://etherscan.io/tx/{tx_hash})", "🔄 SWAP"
-        
-        token_symbol = token_config["symbol"]
-        explorer_url = token_config["explorer_url"]
-        token_address = token_config["token_address"]
-        pool_address = token_config["pool_address"]
-        network = token_config["network"]
-        
-        # --- 2. Get Swap Event Data ---
-        amount0_raw = swap_event["args"]["amount0"]
-        amount1_raw = swap_event["args"]["amount1"]
-        
-        # --- 3. Determine Token Order in the Pool ---
-        print(f"[{token_key.upper()}] Determining token order for pool {pool_address}...")
-        token_order = get_token_order(pool_address, token_address, network)
-        
-        if not token_order:
-            print(f"[{token_key.upper()}] ❌ CRITICAL: Could not determine token order. Aborting format.")
-            return f"⚠️ **Swap Detected (Unknown Direction)**\n\n🔗 [{tx_hash[:10]}...]({explorer_url}/tx/{tx_hash})", "UNKNOWN"
-
-        print(f"[{token_key.upper()}] ✅ Token is {token_order}")
-
-        # --- 4. Assign Amounts Based on Token Order ---
-        # This is the key logic fix. We directly assign amounts based on the token's position.
-        if token_order == 'token0':
-            tracked_token_amount_raw = amount0_raw
-            eth_amount_raw = amount1_raw
-        else: # token_order == 'token1'
-            tracked_token_amount_raw = amount1_raw
-            eth_amount_raw = amount0_raw
-            
-        # Convert raw amounts to human-readable format (assuming 18 decimals for both)
-        tracked_token_amount = abs(tracked_token_amount_raw) / (10 ** 18)
-        eth_amount = abs(eth_amount_raw) / (10 ** 18)
-
-        # --- 5. Determine Direction (BUY or SELL) ---
-        # This logic is now simple and reliable.
-        if tracked_token_amount_raw < 0:
-            direction = "🟢 BUY"
-        elif tracked_token_amount_raw > 0:
-            direction = "🔴 SELL"
-        else:
-            # This can happen in complex swaps, we'll just report it.
-            direction = "🔄 SWAP"
-
-        print(f"[{token_key.upper()}] ✅ Detected {direction}: {tracked_token_amount:.3f} {token_symbol} for {eth_amount:.3f} ETH")
-
-        # --- 6. Get Prices and Calculate USD Value ---
-        # Your existing price caching logic is good.
-        token_usd_price, eth_usd_price = get_cached_prices("T" if token_symbol == "T" else "EMP")
-        total_usd = eth_amount * eth_usd_price
-        
-        # Calculate the price per token from this specific transaction
-        if tracked_token_amount > 0 and total_usd > 0:
-            price_per_token = total_usd / tracked_token_amount
-        else:
-            price_per_token = 0 # Fallback
-
-        # --- 7. Build the Message ---
-        emoji_count = max(1, int(total_usd / 50)) if total_usd > 0 else 1
-        action_emojis = ""
-
-        if direction == "🟢 BUY":
-            title = f"🟢 **BOUGHT ${token_symbol}** 🟢"
-            # Build buy emojis (🍑🍒)
-            for i in range(emoji_count):
-                action_emojis += "🍑" if i % 2 == 0 else "🍒"
-            
-            details = (
-                f"💰 **${total_usd:,.2f}** ({eth_amount:.3f} ETH)\n"
-                f"💎 **{tracked_token_amount:,.3f} ${token_symbol}**\n"
-            )
-
-        elif direction == "🔴 SELL":
-            title = f"🔴 **SOLD ${token_symbol}** 🔴"
-            # Build sell emojis (🍆🍌)
-            for i in range(emoji_count):
-                action_emojis += "🍆" if i % 2 == 0 else "🍌"
-
-            details = (
-                f"💰 **${total_usd:,.2f}** ({eth_amount:.3f} ETH)\n"
-                f"💎 **{tracked_token_amount:,.3f} ${token_symbol}**\n"
-            )
-        else: # SWAP or UNKNOWN
-            return f"🔄 **Swap Detected**\n\n🔗 [{tx_hash[:10]}...]({explorer_url}/tx/{tx_hash})", "SWAP"
-
-        # Assemble the final message
-        message = (
-            f"{title}\n\n"
-            f"{action_emojis}\n\n"
-            f"{details}"
-            f"💵 **${price_per_token:,.4f} per ${token_symbol}**\n\n"
-            f"🔗 **Transaction:** [View TX]({explorer_url}/tx/{tx_hash})"
-        )
-        
-        return message, direction
-        
-    except Exception as e:
-        print(f"❌ CRITICAL ERROR in format_swap_message for {token_key}: {e}")
-        # Return a safe fallback message
-        explorer_url = TOKENS.get(token_key, {}).get("explorer_url", "https://etherscan.io")
-        return f"⚠️ **Error processing transaction**\n\n🔗 [{tx_hash[:10]}...]({explorer_url}/tx/{tx_hash})", "ERROR"
-
-async def monitor_transactions(bot, token_key="emp", group_id=None):
-    """Monitor Uniswap pool for new transactions for a specific token"""
-    global monitoring_groups, processed_transactions, monitoring_tasks
-    
-    token_config = TOKENS.get(token_key)
-    if not token_config:
-        print(f"Token configuration not found for {token_key}")
-        return
-    
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    
-    if not w3:
-        print(f"Web3 not configured for {network}. Skipping transaction monitoring for {token_key}.")
-        return
-    
-    if not group_id:
-        print(f"No group chat ID set for {token_key}. Use /startmonitor in a group first.")
-        return
-    
-    # Store the task reference for proper stopping
-    task = asyncio.current_task()
-    monitoring_tasks[token_key] = task
-    
-    try:
-        # Create contract instance
-        pool_contract = w3.eth.contract(
-            address=Web3.to_checksum_address(token_config["pool_address"]),
-            abi=UNISWAP_POOL_ABI
-        )
-        
-        print(f"Starting transaction monitoring for {token_key} pool: {token_config['pool_address']}")
-        print(f"Posting updates to group chat: {group_id}")
-        
-        # Get latest block with error handling
-        try:
-            latest_block = w3.eth.block_number
-            print(f"Starting from block: {latest_block}")
-        except Exception as e:
-            if "429" in str(e) or "Too Many Requests" in str(e):
-                print(f"Rate limited during startup for {token_key}, waiting 60 seconds before retrying...")
-                await asyncio.sleep(60)
-                try:
-                    latest_block = w3.eth.block_number
-                    print(f"Retry successful, starting from block: {latest_block}")
-                except Exception as e2:
-                    print(f"Still rate limited for {token_key}: {e2}")
-                    return
-            else:
-                print(f"Error getting initial block number for {token_key}: {e}")
-                return
-        
-        # Set polling interval based on network
-        if network == "ethereum":
-            polling_interval = 15  # 15 seconds for Ethereum
-            max_blocks_per_call = 5  # Process more blocks for Ethereum
-            skip_threshold = 8  # Skip if more than 8 blocks behind
-        else:  # arbitrum
-            polling_interval = 1  # 1 second for Arbitrum
-            max_blocks_per_call = 50  # Process up to 50 blocks for Arbitrum (conservative)
-            skip_threshold = 100  # Skip if more than 100 blocks behind
-        
-        while token_key in monitoring_groups:  # Check if monitoring should continue
-            try:
-                # Get new blocks with rate limiting
-                try:
-                    print(f"🔍 [{token_key.upper()}] Getting current block number... (1 credit)")
-                    current_block = w3.eth.block_number
-                    print(f"✅ [{token_key.upper()}] Current block: {current_block}")
-                except Exception as e:
-                    if "429" in str(e) or "Too Many Requests" in str(e):
-                        print(f"⚠️ Rate limited by {network} provider for {token_key}, continuing immediately...")
-                        continue
-                    else:
-                        print(f"❌ Error getting block number for {token_key}: {e}")
-                        await asyncio.sleep(10)
-                        continue
-                
-                if current_block > latest_block:
-                    # Check for swap events in new blocks (smaller batches for efficiency)
-                    try:
-                        blocks_to_process = current_block - latest_block
-                        
-                        # Skip processing if too many blocks to avoid rate limits
-                        if blocks_to_process > skip_threshold:
-                            print(f"⚠️ [{token_key.upper()}] Too many blocks to process ({blocks_to_process}), skipping to avoid rate limits. Latest: {latest_block}, Current: {current_block}")
-                            latest_block = current_block - 2  # Skip to last 2 blocks
-                            continue
-                        
-                        if blocks_to_process > max_blocks_per_call:
-                            # Process in chunks
-                            total_chunks = (blocks_to_process + max_blocks_per_call - 1) // max_blocks_per_call
-                            print(f"📊 [{token_key.upper()}] Processing {blocks_to_process} blocks in {total_chunks} chunks of {max_blocks_per_call} blocks each")
-                            
-                            for chunk_start in range(latest_block + 1, current_block + 1, max_blocks_per_call):
-                                chunk_end = min(chunk_start + max_blocks_per_call - 1, current_block)
-                                chunk_size = chunk_end - chunk_start + 1
-                                estimated_credits = max(10, chunk_size * 2)  # Base 10 + 2 per block
-                                
-                                # Get swap events from this chunk
-                                print(f"🔍 [{token_key.upper()}] Getting events from blocks {chunk_start}-{chunk_end} ({chunk_size} blocks)... (~{estimated_credits} credits)")
-                                
-                                # Try to get Swap events first
-                                swap_events = pool_contract.events.Swap.get_logs(
-                                    fromBlock=chunk_start,
-                                    toBlock=chunk_end
-                                )
-                                
-                                # If no Swap events, try other event types
-                                if len(swap_events) == 0:
-                                    print(f"🔍 [{token_key.upper()}] No Swap events found, checking for other event types...")
-                                    
-                                    # Try to get any events from this contract using Web3 first, then fallback to Etherscan API
-                                    all_logs = None
-                                    try:
-                                        all_logs = w3.eth.get_logs({
-                                            'address': Web3.to_checksum_address(token_config["pool_address"]),
-                                            'fromBlock': chunk_start,
-                                            'toBlock': chunk_end
-                                        })
-                                        print(f"✅ [{token_key.upper()}] Retrieved logs via Web3")
-                                    except Exception as e:
-                                        print(f"⚠️ Web3 get_logs failed for {token_key}: {e}")
-                                        # Fallback to Etherscan API
-                                        try:
-                                            print(f"🔍 [{token_key.upper()}] Trying Etherscan API fallback...")
-                                            all_logs = get_logs_via_etherscan(
-                                                chunk_start, 
-                                                chunk_end, 
-                                                token_config["pool_address"], 
-                                                token_key
-                                            )
-                                            if all_logs:
-                                                print(f"✅ [{token_key.upper()}] Retrieved logs via Etherscan API")
-                                            else:
-                                                print(f"❌ Etherscan API also failed for {token_key}")
-                                        except Exception as e2:
-                                            print(f"❌ Etherscan API fallback also failed for {token_key}: {e2}")
-                                    
-                                    if all_logs and len(all_logs) > 0:
-                                        print(f"✅ [{token_key.upper()}] Found {len(all_logs)} total events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
-                                        
-                                        # Process these as generic events
-                                        for log in all_logs:
-                                            tx_hash = log["transactionHash"].hex()
-                                            
-                                            # Avoid duplicate processing
-                                            if tx_hash in processed_transactions[token_key]:
-                                                continue
-                                            
-                                            processed_transactions[token_key].add(tx_hash)
-                                            
-                                            # Create a generic event structure
-                                            event = {
-                                                "transactionHash": log["transactionHash"],
-                                                "blockNumber": log["blockNumber"],
-                                                "args": {
-                                                    "amount0": 0,
-                                                    "amount1": 0,
-                                                    "sqrtPriceX96": 0,
-                                                    "liquidity": 0,
-                                                    "tick": 0
-                                                }
-                                            }
-                                            
-                                            # Get transaction details
-                                            print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
-                                            tx_details = get_transaction_details(tx_hash, token_key)
-                                            print(f"✅ [{token_key.upper()}] Transaction details retrieved")
-                                            
-                                            # Format and send message
-                                            message_result = format_swap_message(event, tx_hash, tx_details, token_key)
-                                            
-                                            if isinstance(message_result, tuple):
-                                                message, direction = message_result
-                                            else:
-                                                message = message_result
-                                                direction = "🔄 SWAP"
-                                            
-                                            # Send the message
-                                            try:
-                                                await bot.send_message(
-                                                    chat_id=group_id,
-                                                    text=message,
-                                                    parse_mode='Markdown',
-                                                    disable_web_page_preview=True
-                                                )
-                                                print(f"📤 [{token_key.upper()}] Posted transaction: {tx_hash[:10]}...")
-                                            except Exception as e:
-                                                print(f"❌ Error sending message for {token_key}: {e}")
-                                            
-                                            # Small delay to avoid rate limits
-                                            await asyncio.sleep(1)
-                                    
-                                    else:
-                                        print(f"✅ [{token_key.upper()}] Found 0 events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
-                                else:
-                                    print(f"✅ [{token_key.upper()}] Found {len(swap_events)} events from blocks {chunk_start} to {chunk_end} for {token_key.upper()} on {network.upper()}")
-                                    
-                                    for event in swap_events:
-                                        tx_hash = event["transactionHash"].hex()
-                                        
-                                        # Avoid duplicate processing
-                                        if tx_hash in processed_transactions[token_key]:
-                                            continue
-                                        
-                                        processed_transactions[token_key].add(tx_hash)
-                                        
-                                        # Get transaction details
-                                        print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
-                                        tx_details = get_transaction_details(tx_hash, token_key)
-                                        print(f"✅ [{token_key.upper()}] Transaction details retrieved")
-                                        
-                                        # Format and send message
-                                        message_result = format_swap_message(event, tx_hash, tx_details, token_key)
-                                        
-                                        if isinstance(message_result, tuple):
-                                            message, direction = message_result
-                                        else:
-                                            message = message_result
-                                            direction = "🔄 SWAP"
-                                        
-                                        # Process both BUY and SELL transactions
-                                        if direction == "🔴 SELL":
-                                            try:
-                                                # Use sell-specific image
-                                                image_path = token_config["sell_image"]
-                                                
-                                                # Send message with image
-                                                with open(image_path, "rb") as img:
-                                                    await bot.send_photo(
-                                                        chat_id=group_id,
-                                                        photo=img,
-                                                        caption=message,
-                                                        parse_mode='Markdown'
-                                                    )
-                                                print(f"📤 [{token_key.upper()}] Posted SELL transaction with image: {tx_hash[:10]}...")
-                                            except Exception as e:
-                                                print(f"❌ Error sending message with image for {token_key}: {e}")
-                                                # Fallback to text-only if image fails
-                                                try:
-                                                    await bot.send_message(
-                                                        chat_id=group_id,
-                                                        text=message,
-                                                        parse_mode='Markdown',
-                                                        disable_web_page_preview=True
-                                                    )
-                                                    print(f"📤 [{token_key.upper()}] Posted SELL transaction (text-only): {tx_hash[:10]}...")
-                                                except Exception as e2:
-                                                    print(f"❌ Error sending text-only message for {token_key}: {e2}")
-                                        elif direction == "🟢 BUY":
-                                            try:
-                                                # Use buy-specific image
-                                                image_path = token_config["buy_image"]
-                                                
-                                                # Send message with image
-                                                with open(image_path, "rb") as img:
-                                                    await bot.send_photo(
-                                                        chat_id=group_id,
-                                                        photo=img,
-                                                        caption=message,
-                                                        parse_mode='Markdown'
-                                                    )
-                                                print(f"📤 [{token_key.upper()}] Posted BUY transaction with image: {tx_hash[:10]}...")
-                                            except Exception as e:
-                                                print(f"❌ Error sending message with image for {token_key}: {e}")
-                                                # Fallback to text-only if image fails
-                                                try:
-                                                    await bot.send_message(
-                                                        chat_id=group_id,
-                                                        text=message,
-                                                        parse_mode='Markdown',
-                                                        disable_web_page_preview=True
-                                                    )
-                                                    print(f"📤 [{token_key.upper()}] Posted BUY transaction (text-only): {tx_hash[:10]}...")
-                                                except Exception as e2:
-                                                    print(f"❌ Error sending text-only message for {token_key}: {e2}")
-                                        else:
-                                            # For other swap types, send text-only
-                                            try:
-                                                await bot.send_message(
-                                                    chat_id=group_id,
-                                                    text=message,
-                                                    parse_mode='Markdown',
-                                                    disable_web_page_preview=True
-                                                )
-                                                print(f"📤 [{token_key.upper()}] Posted SWAP transaction: {tx_hash[:10]}...")
-                                            except Exception as e:
-                                                print(f"❌ Error sending text-only message for {token_key}: {e}")
-                                        
-                                        # Small delay to avoid rate limits
-                                        await asyncio.sleep(1)
-                        else:
-                            # Process all blocks in one call (small range)
-                            estimated_credits = max(10, blocks_to_process * 2)  # Base 10 + 2 per block
-                            print(f"🔍 [{token_key.upper()}] Getting events from blocks {latest_block + 1}-{current_block} ({blocks_to_process} blocks)... (~{estimated_credits} credits)")
-                            
-                            # Try to get Swap events first
-                            swap_events = pool_contract.events.Swap.get_logs(
-                                fromBlock=latest_block + 1,
-                                toBlock=current_block
-                            )
-                            
-                            # If no Swap events, try other event types
-                            if len(swap_events) == 0:
-                                print(f"🔍 [{token_key.upper()}] No Swap events found, checking for other event types...")
-                                
-                                # Try to get any events from this contract using Web3 first, then fallback to Etherscan API
-                                all_logs = None
-                                try:
-                                    all_logs = w3.eth.get_logs({
-                                        'address': Web3.to_checksum_address(token_config["pool_address"]),
-                                        'fromBlock': latest_block + 1,
-                                        'toBlock': current_block
-                                    })
-                                    print(f"✅ [{token_key.upper()}] Retrieved logs via Web3")
-                                except Exception as e:
-                                    print(f"⚠️ Web3 get_logs failed for {token_key}: {e}")
-                                    # Fallback to Etherscan API
-                                    try:
-                                        print(f"🔍 [{token_key.upper()}] Trying Etherscan API fallback...")
-                                        all_logs = get_logs_via_etherscan(
-                                            latest_block + 1, 
-                                            current_block, 
-                                            token_config["pool_address"], 
-                                            token_key
-                                        )
-                                        if all_logs:
-                                            print(f"✅ [{token_key.upper()}] Retrieved logs via Etherscan API")
-                                        else:
-                                            print(f"❌ Etherscan API also failed for {token_key}")
-                                    except Exception as e2:
-                                        print(f"❌ Etherscan API fallback also failed for {token_key}: {e2}")
-                                
-                                if all_logs and len(all_logs) > 0:
-                                    print(f"✅ [{token_key.upper()}] Found {len(all_logs)} total events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
-                                    
-                                    # Process these as generic events
-                                    for log in all_logs:
-                                        tx_hash = log["transactionHash"].hex()
-                                        
-                                        # Avoid duplicate processing
-                                        if tx_hash in processed_transactions[token_key]:
-                                            continue
-                                        
-                                        processed_transactions[token_key].add(tx_hash)
-                                        
-                                        # Create a generic event structure
-                                        event = {
-                                            "transactionHash": log["transactionHash"],
-                                            "blockNumber": log["blockNumber"],
-                                            "args": {
-                                                "amount0": 0,
-                                                "amount1": 0,
-                                                "sqrtPriceX96": 0,
-                                                "liquidity": 0,
-                                                "tick": 0
-                                            }
-                                        }
-                                        
-                                        # Get transaction details
-                                        print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
-                                        tx_details = get_transaction_details(tx_hash, token_key)
-                                        print(f"✅ [{token_key.upper()}] Transaction details retrieved")
-                                        
-                                        # Format and send message
-                                        message_result = format_swap_message(event, tx_hash, tx_details, token_key)
-                                        
-                                        if isinstance(message_result, tuple):
-                                            message, direction = message_result
-                                        else:
-                                            message = message_result
-                                            direction = "🔄 SWAP"
-                                        
-                                        # Send the message
-                                        try:
-                                            await bot.send_message(
-                                                chat_id=group_id,
-                                                text=message,
-                                                parse_mode='Markdown',
-                                                disable_web_page_preview=True
-                                            )
-                                            print(f"📤 [{token_key.upper()}] Posted transaction: {tx_hash[:10]}...")
-                                        except Exception as e:
-                                            print(f"❌ Error sending message for {token_key}: {e}")
-                                        
-                                        # Small delay to avoid rate limits
-                                        await asyncio.sleep(1)
-                                
-                                else:
-                                    print(f"✅ [{token_key.upper()}] Found 0 events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
-                            else:
-                                print(f"✅ [{token_key.upper()}] Found {len(swap_events)} events from blocks {latest_block + 1} to {current_block} for {token_key.upper()} on {network.upper()}")
-                                
-                                for event in swap_events:
-                                    tx_hash = event["transactionHash"].hex()
-                                    
-                                    # Avoid duplicate processing
-                                    if tx_hash in processed_transactions[token_key]:
-                                        continue
-                                    
-                                    processed_transactions[token_key].add(tx_hash)
-                                    
-                                    # Get transaction details
-                                    print(f"🔍 [{token_key.upper()}] Getting transaction details for {tx_hash[:10]}... (1 credit)")
-                                    tx_details = get_transaction_details(tx_hash, token_key)
-                                    print(f"✅ [{token_key.upper()}] Transaction details retrieved")
-                                    
-                                    # Format and send message
-                                    message_result = format_swap_message(event, tx_hash, tx_details, token_key)
-                                    
-                                    if isinstance(message_result, tuple):
-                                        message, direction = message_result
-                                    else:
-                                        message = message_result
-                                        direction = "🔄 SWAP"
-                                    
-                                    # Process both BUY and SELL transactions
-                                    if direction == "🔴 SELL":
-                                        try:
-                                            # Use sell-specific image
-                                            image_path = token_config["sell_image"]
-                                            
-                                            # Send message with image
-                                            with open(image_path, "rb") as img:
-                                                await bot.send_photo(
-                                                    chat_id=group_id,
-                                                    photo=img,
-                                                    caption=message,
-                                                    parse_mode='Markdown'
-                                                )
-                                            print(f"📤 [{token_key.upper()}] Posted SELL transaction with image: {tx_hash[:10]}...")
-                                        except Exception as e:
-                                            print(f"❌ Error sending message with image for {token_key}: {e}")
-                                            # Fallback to text-only if image fails
-                                            try:
-                                                await bot.send_message(
-                                                    chat_id=group_id,
-                                                    text=message,
-                                                    parse_mode='Markdown',
-                                                    disable_web_page_preview=True
-                                                )
-                                                print(f"📤 [{token_key.upper()}] Posted SELL transaction (text-only): {tx_hash[:10]}...")
-                                            except Exception as e2:
-                                                print(f"❌ Error sending text-only message for {token_key}: {e2}")
-                                    elif direction == "🟢 BUY":
-                                        try:
-                                            # Use buy-specific image
-                                            image_path = token_config["buy_image"]
-                                            
-                                            # Send message with image
-                                            with open(image_path, "rb") as img:
-                                                await bot.send_photo(
-                                                    chat_id=group_id,
-                                                    photo=img,
-                                                    caption=message,
-                                                    parse_mode='Markdown'
-                                                )
-                                            print(f"📤 [{token_key.upper()}] Posted BUY transaction with image: {tx_hash[:10]}...")
-                                        except Exception as e:
-                                            print(f"❌ Error sending message with image for {token_key}: {e}")
-                                            # Fallback to text-only if image fails
-                                            try:
-                                                await bot.send_message(
-                                                    chat_id=group_id,
-                                                    text=message,
-                                                    parse_mode='Markdown',
-                                                    disable_web_page_preview=True
-                                                )
-                                                print(f"📤 [{token_key.upper()}] Posted BUY transaction (text-only): {tx_hash[:10]}...")
-                                            except Exception as e2:
-                                                print(f"❌ Error sending text-only message for {token_key}: {e2}")
-                                    else:
-                                        # For other swap types, send text-only
-                                        try:
-                                            await bot.send_message(
-                                                chat_id=group_id,
-                                                text=message,
-                                                parse_mode='Markdown',
-                                                disable_web_page_preview=True
-                                            )
-                                            print(f"📤 [{token_key.upper()}] Posted SWAP transaction: {tx_hash[:10]}...")
-                                        except Exception as e:
-                                            print(f"❌ Error sending text-only message for {token_key}: {e}")
-                                    
-                                    # Small delay to avoid rate limits
-                                        await asyncio.sleep(1)
-                        
-                        # Update latest block
-                        latest_block = current_block
-                        
-                    except Exception as e:
-                        if "429" in str(e) or "Too Many Requests" in str(e):
-                            print(f"⚠️ Rate limited while processing events for {token_key}, waiting 30 seconds...")
-                            await asyncio.sleep(30)
-                        else:
-                            print(f"❌ Error processing events for {token_key}: {e}")
-                            await asyncio.sleep(10)
-                
-                # Wait before next poll
-                await asyncio.sleep(polling_interval)
-                
-            except Exception as e:
-                print(f"❌ Unexpected error in monitoring loop for {token_key}: {e}")
-                await asyncio.sleep(10)
-    
-    except asyncio.CancelledError:
-        print(f"🛑 Monitoring task cancelled for {token_key}")
-    except Exception as e:
-        print(f"❌ Fatal error in monitoring task for {token_key}: {e}")
-    finally:
-        # Clean up task reference
-        if token_key in monitoring_tasks:
-            del monitoring_tasks[token_key]
-        print(f"🏁 Monitoring task ended for {token_key}")
-
-async def show_last_5_transactions(update, context):
-    """Command to show last 5 buy/sell transactions for EMP"""
-    print(f"📋 Command called: /last5 by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    token_key = "emp"
-    token_config = TOKENS.get(token_key)
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    
-    if not w3:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"❌ Web3 not configured for {network}. Please set INFURA_URL in .env file"
-        )
-        return
-    
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="🔍 Fetching last 5 buy/sell transactions for EMP..."
-    )
-    
-    # Get recent transactions
-    transactions = get_last_5_transactions(token_key)
-    
-    if not transactions:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="❌ No recent buy/sell transactions found or error fetching data."
-        )
-        return
-    
-    # Format the message
-    message = format_last_5_transactions(transactions, token_key)
-    
-    # Send the message
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=message,
-        parse_mode='Markdown'
-    )
-
-async def start_monitoring(update, context):
-    """Command to start EMP transaction monitoring"""
-    print(f"🚀 Command called: /startmonitor by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    global monitoring_groups
-    
-    token_key = "emp"
-    token_config = TOKENS.get(token_key)
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    
-    if not w3:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"❌ {network.upper()} RPC URL not configured in .env file\n\n"
-                 f"Please add your {network} endpoint to the .env file:\n"
-                 f"INFURA_URL=https://mainnet.infura.io/v3/your_project_id"
-        )
-        return
-    
-    # Get the chat ID from where the command was sent
-    chat_id = update.effective_chat.id
-    chat_type = update.effective_chat.type
-    
-    # Check if this is a group chat
-    if chat_type == "private":
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="⚠️ **Please use this command in a group chat!**\n\n"
-                 "Transaction monitoring works best in groups where multiple people can see the updates.\n\n"
-                 "1. Add me to a group\n"
-                 "2. Type `/startmonitor` in that group"
-        )
-        return
-    
-    monitoring_groups[token_key] = chat_id
-    
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="🚀 Starting EMP transaction monitoring...\n\n"
-             f"📊 Pool: {token_config['pool_address']}\n"
-             f"🌐 Network: {network.title()}\n"
-             f"💬 Group: {chat_id}\n"
-             f"📝 Chat Type: {chat_type}\n\n"
-             "Monitoring will run in the background.\n"
-             "You'll see transaction updates here soon!"
-    )
-    
-    # Start monitoring in background
-    asyncio.create_task(monitor_transactions(context.bot, token_key, chat_id))
-
-async def stop_monitoring(update, context):
-    """Command to stop EMP transaction monitoring"""
-    print(f"🛑 Command called: /stopmonitor by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    global monitoring_groups, monitoring_tasks
-    
-    token_key = "emp"
-    
-    if token_key in monitoring_groups:
-        # Cancel the monitoring task
-        if token_key in monitoring_tasks:
-            task = monitoring_tasks[token_key]
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass  # Expected when cancelling
-        
-        # Remove from monitoring groups
-        del monitoring_groups[token_key]
-        
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="🛑 EMP transaction monitoring stopped.\n\n"
-                 "Use `/startmonitor` to restart EMP monitoring."
-        )
-    else:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="ℹ️ No active EMP monitoring to stop."
-        )
-
-async def check_status(update, context):
-    """Command to check monitoring status"""
-    print(f"📊 Command called: /status by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    global monitoring_groups, processed_transactions, monitoring_tasks
-    
-    status_text = "📊 **Monitoring Status**\n\n"
-    
-    # Check Web3 connections
-    for network, w3 in w3_connections.items():
-        try:
-            latest_block = w3.eth.block_number
-            status_text += f"✅ **{network.title()} Connected**\n"
-            status_text += f"📦 Latest Block: {latest_block:,}\n"
-        except Exception as e:
-            status_text += f"❌ **{network.title()} Error**: {str(e)}\n"
-    
-    if not w3_connections:
-        status_text += f"❌ **No Web3 Connections**\n"
-        status_text += f"Missing RPC URLs in .env file\n"
-    
-    # Check monitoring status for each token
-    for token_key, token_config in TOKENS.items():
-        status_text += f"\n📊 **{token_config['name']} ({token_config['symbol']})**\n"
-        if token_key in monitoring_groups:
-            status_text += f"✅ **Monitoring Active**\n"
-            status_text += f"💬 Group ID: {monitoring_groups[token_key]}\n"
-            status_text += f"📊 Pool: {token_config['pool_address'][:8]}...{token_config['pool_address'][-6:]}\n"
-            status_text += f"🔄 Processed TXs: {len(processed_transactions[token_key])}\n"
-            
-            # Check task status
-            if token_key in monitoring_tasks:
-                task = monitoring_tasks[token_key]
-                if task.done():
-                    status_text += f"⚠️ **Task Status**: Completed/Cancelled\n"
-                else:
-                    status_text += f"✅ **Task Status**: Running\n"
-            else:
-                status_text += f"⚠️ **Task Status**: No task reference\n"
-        else:
-            status_text += f"❌ **Monitoring Inactive**\n"
-            status_text += f"Use `/startmonitor` to begin\n"
-    
-    # Check environment variables
-    status_text += f"\n🔧 **Configuration**\n"
-    status_text += f"INFURA_URL: {'✅ Set' if INFURA_URL else '❌ Missing'}\n"
-    status_text += f"ARBITRUM_RPC_URL: {'✅ Set' if ARBITRUM_RPC_URL else '❌ Missing'}\n"
-    status_text += f"ETHERSCAN_API: {'✅ Set' if ETHERSCAN_API_KEY else '❌ Missing (optional)'}\n"
-    
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=status_text,
-        parse_mode='Markdown'
-    )
-
-async def test_connection(update, context):
-    """Command to test blockchain connection for EMP"""
-    print(f"🔧 Command called: /test by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    token_key = "emp"
-    token_config = TOKENS.get(token_key)
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    
-    if not w3:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"❌ Web3 not configured for {network}. Please set INFURA_URL in .env file"
-        )
-        return
-    
-    try:
-        # Test basic connection
-        latest_block = w3.eth.block_number
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"✅ **Connection Test Successful**\n\n"
-                 f"📦 Latest Block: {latest_block:,}\n"
-                 f"🌐 Network: {network.title()}\n"
-                 f"🔗 Provider: Infura"
-        )
-        
-        # Test pool contract
-        try:
-            pool_contract = w3.eth.contract(
-                address=Web3.to_checksum_address(token_config["pool_address"]),
-                abi=UNISWAP_POOL_ABI
-            )
-            
-            # Try to get recent events
-            recent_events = pool_contract.events.Swap.get_logs(
-                fromBlock=latest_block - 1000,
-                toBlock=latest_block
-            )
-            
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"✅ **Pool Contract Test Successful**\n\n"
-                     f"📊 Pool: {token_config['pool_address'][:8]}...{token_config['pool_address'][-6:]}\n"
-                     f"🔄 Recent Swaps: {len(recent_events)} (last 1000 blocks)\n"
-                     f"💎 Contract: Active"
-            )
-            
-        except Exception as e:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"⚠️ **Pool Contract Test Failed**\n\n"
-                     f"Error: {str(e)}\n\n"
-                     f"This might be normal if the pool hasn't had recent activity."
-            )
-            
-    except Exception as e:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"❌ **Connection Test Failed**\n\n"
-                 f"Error: {str(e)}\n\n"
-                 f"Please check your INFURA_URL in .env file"
-        )
-
-# Talos-specific commands
-async def show_last_5_talos_transactions(update, context):
-    """Command to show last 5 buy/sell transactions for Talos"""
-    print(f"📋 Command called: /last5talos by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    token_key = "talos"
-    token_config = TOKENS.get(token_key)
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    
-    if not w3:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"❌ Web3 not configured for {network}. Please set ARBITRUM_RPC_URL in .env file"
-        )
-        return
-    
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="🔍 Fetching last 5 buy/sell transactions for Talos..."
-    )
-    
-    # Get recent transactions
-    transactions = get_last_5_transactions(token_key)
-    
-    if not transactions:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="❌ No recent buy/sell transactions found or error fetching data."
-        )
-        return
-    
-    # Format the message
-    message = format_last_5_transactions(transactions, token_key)
-    
-    # Send the message
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=message,
-        parse_mode='Markdown'
-    )
-
-async def start_talos_monitoring(update, context):
-    """Command to start Talos transaction monitoring"""
-    print(f"🚀 Command called: /starttalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    global monitoring_groups
-    
-    token_key = "talos"
-    token_config = TOKENS.get(token_key)
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    
-    if not w3:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"❌ {network.upper()} RPC URL not configured in .env file\n\n"
-                 f"Please add your {network} endpoint to the .env file:\n"
-                 f"ARBITRUM_RPC_URL=https://arbitrum-mainnet.infura.io/v3/your_project_id"
-        )
-        return
-    
-    # Get the chat ID from where the command was sent
-    chat_id = update.effective_chat.id
-    chat_type = update.effective_chat.type
-    
-    # Check if this is a group chat
-    if chat_type == "private":
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="⚠️ **Please use this command in a group chat!**\n\n"
-                 "Transaction monitoring works best in groups where multiple people can see the updates.\n\n"
-                 "1. Add me to a group\n"
-                 "2. Type `/starttalos` in that group"
-        )
-        return
-    
-    monitoring_groups[token_key] = chat_id
-    
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="🚀 Starting Talos transaction monitoring...\n\n"
-             f"📊 Pool: {token_config['pool_address']}\n"
-             f"🌐 Network: {network.title()}\n"
-             f"💬 Group: {chat_id}\n"
-             f"📝 Chat Type: {chat_type}\n\n"
-             "Monitoring will run in the background.\n"
-             "You'll see transaction updates here soon!"
-    )
-    
-    # Start monitoring in background
-    asyncio.create_task(monitor_transactions(context.bot, token_key, chat_id))
-
-async def stop_talos_monitoring(update, context):
-    """Command to stop Talos transaction monitoring"""
-    print(f"🛑 Command called: /stoptalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    global monitoring_groups, monitoring_tasks
-    
-    token_key = "talos"
-    
-    if token_key in monitoring_groups:
-        # Cancel the monitoring task
-        if token_key in monitoring_tasks:
-            task = monitoring_tasks[token_key]
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass  # Expected when cancelling
-        
-        # Remove from monitoring groups
-        del monitoring_groups[token_key]
-        
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="🛑 Talos transaction monitoring stopped.\n\n"
-                 "Use `/starttalos` to restart Talos monitoring."
-        )
-    else:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="ℹ️ No active Talos monitoring to stop."
-        )
-
-async def test_talos_connection(update, context):
-    """Command to test blockchain connection for Talos"""
-    print(f"🔧 Command called: /testtalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    token_key = "talos"
-    token_config = TOKENS.get(token_key)
-    network = token_config["network"]
-    w3 = w3_connections.get(network)
-    
-    if not w3:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"❌ Web3 not configured for {network}. Please set ARBITRUM_RPC_URL in .env file"
-        )
-        return
-    
-    try:
-        # Test basic connection
-        latest_block = w3.eth.block_number
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"✅ **Connection Test Successful**\n\n"
-                 f"📦 Latest Block: {latest_block:,}\n"
-                 f"🌐 Network: {network.title()}\n"
-                 f"🔗 Provider: Arbitrum"
-        )
-        
-        # Test pool contract
-        try:
-            pool_contract = w3.eth.contract(
-                address=Web3.to_checksum_address(token_config["pool_address"]),
-                abi=UNISWAP_POOL_ABI
-            )
-            
-            # Try to get recent events
-            recent_events = pool_contract.events.Swap.get_logs(
-                fromBlock=latest_block - 1000,
-                toBlock=latest_block
-            )
-            
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"✅ **Pool Contract Test Successful**\n\n"
-                     f"📊 Pool: {token_config['pool_address'][:8]}...{token_config['pool_address'][-6:]}\n"
-                     f"🔄 Recent Swaps: {len(recent_events)} (last 1000 blocks)\n"
-                     f"💎 Contract: Active"
-            )
-            
-        except Exception as e:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"⚠️ **Pool Contract Test Failed**\n\n"
-                     f"Error: {str(e)}\n\n"
-                     f"This might be normal if the pool hasn't had recent activity."
-            )
-            
-    except Exception as e:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"❌ **Connection Test Failed**\n\n"
-                 f"Error: {str(e)}\n\n"
-                 f"Please check your ARBITRUM_RPC_URL in .env file"
-        )
-
-def get_price(symbol):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
-    try:
-        response = requests.get(url).json()
-        return response[symbol]["usd"]
-    except:
-        return None
-
-def get_market_data(symbol):
-    url = f"https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "ids": symbol
-    }
-    try:
-        response = requests.get(url, params=params)
-        print(f"API Response for {symbol}: {response.status_code}")
-        print(f"Response text: {response.text[:200]}...")
-        
-        data = response.json()
-        if not data:
-            print(f"No data returned for {symbol}")
-            return None
-            
-        data = data[0]
-        return {
-            "price": data["current_price"],
-            "change_24h": data["price_change_percentage_24h"],
-            "market_cap_rank": data["market_cap_rank"],
-            "total_volume": data["total_volume"],
-            "market_cap": data["market_cap"],
-            "price_change_24h": data["price_change_24h"]
-        }
-    except Exception as e:
-        print(f"Error in get_market_data for {symbol}: {e}")
-        return None
-
-def get_return(current, target):
-    return ((target - current) / current) * 100
-
-def format_percentage(value):
-    return f"{value:,.0f}"
+# ============================================================================
+# COMMAND HANDLERS
+# ============================================================================
 
 async def send_price(update, context):
-    # Get EMP price using pool contract
+    """Send EMP price with target and return prediction"""
     print(f"💰 Command called: /billi by user {update.effective_user.id} in chat {update.effective_chat.id}")
     try:
         price = get_emp_price_from_pool()
@@ -1722,7 +48,7 @@ async def send_price(update, context):
         return
 
 async def send_detailed_price(update, context):
-    # Get EMP price using pool contract
+    """Send detailed EMP price information"""
     print(f"📊 Command called: /price by user {update.effective_user.id} in chat {update.effective_chat.id}")
     try:
         price = get_emp_price_from_pool()
@@ -1731,10 +57,6 @@ async def send_detailed_price(update, context):
             return
         
         ret = get_return(price, TARGET_PRICE)
-
-        # Format large numbers with commas
-        def format_number(num):
-            return f"{num:,.0f}"
 
         text = (
             f"$EMP price update:\n\n"
@@ -1750,13 +72,8 @@ async def send_detailed_price(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Error fetching price data.")
         return
 
-async def handle_wen_commands(update, context):
-    if "/" in update.message.text and "wen" in update.message.text.lower():
-        print(f"⏰ Command called: /wen by user {update.effective_user.id} in chat {update.effective_chat.id}")
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="next week")
-
 async def send_emp_price(update, context):
-    # Get EMP price using pool contract
+    """Send simple EMP price"""
     print(f"💎 Command called: /empprice by user {update.effective_user.id} in chat {update.effective_chat.id}")
     try:
         price = get_emp_price_from_pool()
@@ -1772,7 +89,7 @@ async def send_emp_price(update, context):
         return
 
 async def send_btc_price(update, context):
-    # Get BTC price using ETH price data
+    """Send BTC price"""
     print(f"₿ Command called: /btcprice by user {update.effective_user.id} in chat {update.effective_chat.id}")
     try:
         price = get_btc_price_from_eth()
@@ -1788,7 +105,7 @@ async def send_btc_price(update, context):
         return
 
 async def send_eth_price(update, context):
-    # Get ETH price in one API call
+    """Send ETH price"""
     print(f"Ξ Command called: /ethprice by user {update.effective_user.id} in chat {update.effective_chat.id}")
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
@@ -1840,8 +157,6 @@ async def send_performance_comparison(update, context):
         if not data or len(data) < 3:
             await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch market data. Please try again.")
             return
-        
-
         
         # Organize data by coin
         coin_data = {}
@@ -1919,8 +234,6 @@ async def send_performance_comparison(update, context):
 async def send_daily_volume(update, context):
     """Command to show daily trading volume for EMP"""
     print(f"📊 Command called: /vol by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    # Note: Volume data is not available from Uniswap V3 pool
-    # This would require additional API calls to get historical data
     
     text = (
         f"💎 **$EMP Volume Information:**\n\n"
@@ -1935,10 +248,108 @@ async def send_daily_volume(update, context):
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
 
+# ============================================================================
+# MONITORING COMMANDS
+# ============================================================================
+
+async def start_monitoring(update, context):
+    """Start transaction monitoring for EMP"""
+    print(f"🚀 Command called: /startmonitor by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _start_monitoring_generic(update, context, "emp")
+
+async def start_talos_monitoring(update, context):
+    """Start transaction monitoring for Talos"""
+    print(f"🚀 Command called: /starttalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _start_monitoring_generic(update, context, "talos")
+
+async def _start_monitoring_generic(update, context, token_key: str):
+    """Generic function to start monitoring for any token"""
+    token_config = get_token_config(token_key)
+    network = token_config["network"]
+    w3 = get_w3_connection(network)
+    
+    if not w3:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ {network.upper()} RPC URL not configured in .env file\n\n"
+                 f"Please add your {network} endpoint to the .env file:\n"
+                 f"{'INFURA_URL' if network == 'ethereum' else 'ARBITRUM_RPC_URL'}=your_rpc_endpoint"
+        )
+        return
+    
+    # Get the chat ID from where the command was sent
+    chat_id = update.effective_chat.id
+    chat_type = update.effective_chat.type
+    
+    # Check if this is a group chat
+    if chat_type == "private":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ **Please use this command in a group chat!**\n\n"
+                 "Transaction monitoring works best in groups where multiple people can see the updates.\n\n"
+                 "1. Add me to a group\n"
+                 f"2. Type /start{token_key} in that group"
+        )
+        return
+    
+    monitoring_groups[token_key] = chat_id
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🚀 Starting {token_config['name']} transaction monitoring...\n\n"
+             f"📊 Pool: {token_config['pool_address']}\n"
+             f"🌐 Network: {network.title()}\n"
+             f"💬 Group: {chat_id}\n"
+             f"📝 Chat Type: {chat_type}\n\n"
+             "Monitoring will run in the background.\n"
+             "You'll see transaction updates here soon!"
+    )
+    
+    # Start monitoring in background
+    asyncio.create_task(monitor_transactions(context.bot, token_key, chat_id))
+
+async def stop_monitoring(update, context):
+    """Stop transaction monitoring for EMP"""
+    print(f"🛑 Command called: /stopmonitor by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _stop_monitoring_generic(update, context, "emp")
+
+async def stop_talos_monitoring(update, context):
+    """Stop transaction monitoring for Talos"""
+    print(f"🛑 Command called: /stoptalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _stop_monitoring_generic(update, context, "talos")
+
+async def _stop_monitoring_generic(update, context, token_key: str):
+    """Generic function to stop monitoring for any token"""
+    token_config = get_token_config(token_key)
+    
+    if token_key in monitoring_groups:
+        # Cancel the monitoring task
+        if token_key in monitoring_tasks:
+            task = monitoring_tasks[token_key]
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass  # Expected when cancelling
+        
+        # Remove from monitoring groups
+        del monitoring_groups[token_key]
+        
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"🛑 {token_config['name']} transaction monitoring stopped.\n\n"
+                 f"Use /start{token_key} to restart {token_config['name']} monitoring."
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"ℹ️ No active {token_config['name']} monitoring to stop."
+        )
+
 async def stop_all_monitoring(update, context):
-    """Command to stop all transaction monitoring"""
+    """Stop all transaction monitoring"""
     print(f"🛑 Command called: /stopall by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    global monitoring_groups, monitoring_tasks
     
     stopped_count = 0
     
@@ -1971,174 +382,239 @@ async def stop_all_monitoring(update, context):
             text="ℹ️ No active monitoring to stop."
         )
 
-def get_btc_price_from_eth() -> Optional[float]:
-    """
-    Get BTC price using ETH price data from Etherscan API
-    
-    Returns:
-        BTC price in USD as float or None if failed
-    """
-    try:
-        # Get ETH price data (includes ETH/BTC ratio)
-        prices = get_eth_price()
-        if not prices:
-            print("❌ Failed to get ETH price data")
-            return None
-        
-        eth_usd_price, eth_btc_price = prices
-        
-        # Calculate BTC price: ETH_USD / ETH_BTC = BTC_USD
-        btc_usd_price = eth_usd_price / eth_btc_price
-        
-        print(f"✅ BTC price from ETH: ${btc_usd_price:.6f}")
-        return btc_usd_price
-        
-    except Exception as e:
-        print(f"❌ BTC price calculation failed: {e}")
-        return None
+# ============================================================================
+# TRANSACTION HISTORY COMMANDS
+# ============================================================================
 
-# Store the group chat IDs when monitoring starts
-monitoring_groups = {}
+async def show_last_5_transactions(update, context):
+    """Show last 5 buy/sell transactions for EMP"""
+    print(f"📋 Command called: /last5 by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _show_last_5_transactions_generic(update, context, "emp")
 
-# Track monitoring tasks to properly stop them
-monitoring_tasks = {}
+async def show_last_5_talos_transactions(update, context):
+    """Show last 5 buy/sell transactions for Talos"""
+    print(f"📋 Command called: /last5talos by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _show_last_5_transactions_generic(update, context, "talos")
 
-# Initialize Web3 connections
-w3_connections = {}
-if INFURA_URL:
-    w3_connections["ethereum"] = Web3(Web3.HTTPProvider(INFURA_URL))
-if ARBITRUM_RPC_URL:
-    w3_connections["arbitrum"] = Web3(Web3.HTTPProvider(ARBITRUM_RPC_URL))
-
-# Uniswap V3 Pool ABI (expanded for different event types)
-UNISWAP_POOL_ABI = [
-    # Token functions
-    {
-        "inputs": [],
-        "name": "token0",
-        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "token1",
-        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    # Events
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "sender", "type": "address"},
-            {"indexed": True, "name": "recipient", "type": "address"},
-            {"indexed": False, "name": "amount0", "type": "int256"},
-            {"indexed": False, "name": "amount1", "type": "int256"},
-            {"indexed": False, "name": "sqrtPriceX96", "type": "uint160"},
-            {"indexed": False, "name": "liquidity", "type": "uint128"},
-            {"indexed": False, "name": "tick", "type": "int24"}
-        ],
-        "name": "Swap",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "owner", "type": "address"},
-            {"indexed": True, "name": "tickLower", "type": "int24"},
-            {"indexed": True, "name": "tickUpper", "type": "int24"},
-            {"indexed": False, "name": "amount", "type": "uint128"},
-            {"indexed": False, "name": "amount0", "type": "uint256"},
-            {"indexed": False, "name": "amount1", "type": "uint256"}
-        ],
-        "name": "Mint",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "owner", "type": "address"},
-            {"indexed": True, "name": "tickLower", "type": "int24"},
-            {"indexed": True, "name": "tickUpper", "type": "int24"},
-            {"indexed": False, "name": "amount", "type": "uint128"},
-            {"indexed": False, "name": "amount0", "type": "uint256"},
-            {"indexed": False, "name": "amount1", "type": "uint256"}
-        ],
-        "name": "Burn",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "sender", "type": "address"},
-            {"indexed": True, "name": "recipient", "type": "address"},
-            {"indexed": False, "name": "amount0", "type": "uint256"},
-            {"indexed": False, "name": "amount1", "type": "uint256"},
-            {"indexed": False, "name": "paid0", "type": "uint256"},
-            {"indexed": False, "name": "paid1", "type": "uint256"}
-        ],
-        "name": "Flash",
-        "type": "event"
-    }
-]
-
-def get_logs_via_etherscan(from_block, to_block, address, token_key="emp"):
-    """
-    Get logs via unified Etherscan V2 API
+async def _show_last_5_transactions_generic(update, context, token_key: str):
+    """Generic function to show last 5 transactions for any token"""
+    token_config = get_token_config(token_key)
+    network = token_config["network"]
+    w3 = get_w3_connection(network)
     
-    Args:
-        from_block: Starting block number
-        to_block: Ending block number
-        address: Contract address to filter by
-        token_key: Token key for chain configuration
+    if not w3:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ Web3 not configured for {network}. Please set {'INFURA_URL' if network == 'ethereum' else 'ARBITRUM_RPC_URL'} in .env file"
+        )
+        return
     
-    Returns:
-        List of log entries or None if failed
-    """
-    token_config = TOKENS.get(token_key)
-    if not token_config:
-        print(f"Token configuration not found for {token_key}")
-        return None
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"🔍 Fetching last 5 buy/sell transactions for {token_config['name']}..."
+    )
     
-    chainid = token_config.get("chainid", 1)
+    # Get recent transactions
+    transactions = get_last_5_transactions(token_key, w3)
     
-    return unified_etherscan_api_call(
-        module="logs",
-        action="getLogs",
-        chainid=chainid,
-        fromBlock=from_block,
-        toBlock=to_block,
-        address=address
+    if not transactions:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ No recent buy/sell transactions found or error fetching data."
+        )
+        return
+    
+    # Format the message
+    message = format_last_5_transactions(transactions, token_key, w3)
+    
+    # Send the message
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=message,
+        parse_mode='Markdown'
     )
 
-# Create application with unique session
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("billi", send_price))
-app.add_handler(CommandHandler("price", send_detailed_price))
-app.add_handler(CommandHandler("empprice", send_emp_price))
-app.add_handler(CommandHandler("btcprice", send_btc_price))
-app.add_handler(CommandHandler("ethprice", send_eth_price))
-app.add_handler(CommandHandler("performance", send_performance_comparison))
-app.add_handler(CommandHandler("startmonitor", start_monitoring))
-app.add_handler(CommandHandler("stopmonitor", stop_monitoring))
-app.add_handler(CommandHandler("status", check_status))
-app.add_handler(CommandHandler("test", test_connection))
-app.add_handler(CommandHandler("last5", show_last_5_transactions))
-app.add_handler(CommandHandler("vol", send_daily_volume))
+# ============================================================================
+# TESTING COMMANDS
+# ============================================================================
 
-# Talos-specific commands
-app.add_handler(CommandHandler("last5talos", show_last_5_talos_transactions))
-app.add_handler(CommandHandler("starttalos", start_talos_monitoring))
-app.add_handler(CommandHandler("stoptalos", stop_talos_monitoring))
-app.add_handler(CommandHandler("testtalos", test_talos_connection))
-app.add_handler(CommandHandler("stopall", stop_all_monitoring))
+async def test_connection(update, context):
+    """Test blockchain connection for EMP"""
+    print(f"🔧 Command called: /test by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _test_connection_generic(update, context, "emp")
 
-app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
+async def test_talos_connection(update, context):
+    """Test blockchain connection for Talos"""
+    print(f"🔧 Command called: /testtalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _test_connection_generic(update, context, "talos")
 
-# Don't auto-start monitoring - wait for /startmonitor command
-print("Bot started. Use /startmonitor in a group to begin EMP transaction monitoring.")
-print("Use /starttalos in a group to begin Talos transaction monitoring.")
+async def _test_connection_generic(update, context, token_key: str):
+    """Generic function to test connection for any token"""
+    token_config = get_token_config(token_key)
+    network = token_config["network"]
+    w3 = get_w3_connection(network)
+    
+    if not w3:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ Web3 not configured for {network}. Please set {'INFURA_URL' if network == 'ethereum' else 'ARBITRUM_RPC_URL'} in .env file"
+        )
+        return
+    
+    try:
+        # Test basic connection
+        latest_block = w3.eth.block_number
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"✅ **Connection Test Successful**\n\n"
+                 f"📦 Latest Block: {latest_block:,}\n"
+                 f"🌐 Network: {network.title()}\n"
+                 f"🔗 Provider: {'Infura' if network == 'ethereum' else 'Arbitrum'}"
+        )
+        
+        # Test pool contract
+        try:
+            from config import UNISWAP_POOL_ABI
+            pool_contract = w3.eth.contract(
+                address=Web3.to_checksum_address(token_config["pool_address"]),
+                abi=UNISWAP_POOL_ABI
+            )
+            
+            # Try to get recent events
+            recent_events = pool_contract.events.Swap.get_logs(
+                fromBlock=latest_block - 1000,
+                toBlock=latest_block
+            )
+            
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"✅ **Pool Contract Test Successful**\n\n"
+                     f"📊 Pool: {token_config['pool_address'][:8]}...{token_config['pool_address'][-6:]}\n"
+                     f"🔄 Recent Swaps: {len(recent_events)} (last 1000 blocks)\n"
+                     f"💎 Contract: Active"
+            )
+            
+        except Exception as e:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"⚠️ **Pool Contract Test Failed**\n\n"
+                     f"Error: {str(e)}\n\n"
+                     f"This might be normal if the pool hasn't had recent activity."
+            )
+            
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ **Connection Test Failed**\n\n"
+                 f"Error: {str(e)}\n\n"
+                 f"Please check your {'INFURA_URL' if network == 'ethereum' else 'ARBITRUM_RPC_URL'} in .env file"
+        )
 
-# Use polling with drop_pending_updates to avoid conflicts
-app.run_polling(drop_pending_updates=True)
+async def check_status(update, context):
+    """Check monitoring status"""
+    print(f"📊 Command called: /status by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    
+    status = get_monitoring_status()
+    
+    status_text = "📊 **Monitoring Status**\n\n"
+    
+    # Check Web3 connections
+    for network, connection_info in status["web3_connections"].items():
+        if connection_info["connected"]:
+            status_text += f"✅ **{network.title()} Connected**\n"
+            status_text += f"📦 Latest Block: {connection_info['latest_block']:,}\n"
+        else:
+            status_text += f"❌ **{network.title()} Error**: {connection_info['error']}\n"
+    
+    # Check monitoring status for each token
+    for token_key in get_all_token_keys():
+        token_config = get_token_config(token_key)
+        status_text += f"\n📊 **{token_config['name']} ({token_config['symbol']})**\n"
+        
+        monitoring_info = status["active_monitoring"].get(token_key, {})
+        if monitoring_info.get("active"):
+            status_text += f"✅ **Monitoring Active**\n"
+            status_text += f"💬 Group ID: {monitoring_info['group_id']}\n"
+            status_text += f"📊 Pool: {monitoring_info['pool_address'][:8]}...{monitoring_info['pool_address'][-6:]}\n"
+            status_text += f"🔄 Processed TXs: {status['processed_transactions'].get(token_key, 0)}\n"
+        else:
+            status_text += f"❌ **Monitoring Inactive**\n"
+            if token_key == "emp":
+                status_text += f"Use /startemp to begin\n"
+            else:
+                status_text += f"Use /start{token_key} to begin\n"
+    
+    # Check environment variables
+    status_text += f"\n🔧 **Configuration**\n"
+    status_text += f"INFURA_URL: {'✅ Set' if INFURA_URL else '❌ Missing'}\n"
+    status_text += f"ARBITRUM_RPC_URL: {'✅ Set' if ARBITRUM_RPC_URL else '❌ Missing'}\n"
+    
+    # Escape special characters for markdown
+    status_text = status_text.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('`', '\\`').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=status_text,
+        parse_mode='MarkdownV2'
+    )
+
+# ============================================================================
+# UTILITY COMMANDS
+# ============================================================================
+
+async def handle_wen_commands(update, context):
+    """Handle 'wen' commands"""
+    if "/" in update.message.text and "wen" in update.message.text.lower():
+        print(f"⏰ Command called: /wen by user {update.effective_user.id} in chat {update.effective_chat.id}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="next week")
+
+# ============================================================================
+# MAIN APPLICATION SETUP
+# ============================================================================
+
+def main():
+    """Initialize and run the bot"""
+    # Validate configuration
+    if not validate_config():
+        print("❌ Configuration validation failed. Please check your .env file.")
+        return
+    
+    # Create application
+    app = ApplicationBuilder().token(TOKEN).build()
+    
+    # Add command handlers
+    app.add_handler(CommandHandler("billi", send_price))
+    app.add_handler(CommandHandler("price", send_detailed_price))
+    app.add_handler(CommandHandler("empprice", send_emp_price))
+    app.add_handler(CommandHandler("btcprice", send_btc_price))
+    app.add_handler(CommandHandler("ethprice", send_eth_price))
+    app.add_handler(CommandHandler("performance", send_performance_comparison))
+    app.add_handler(CommandHandler("vol", send_daily_volume))
+    
+    # Monitoring commands
+    app.add_handler(CommandHandler("startemp", start_monitoring))
+    app.add_handler(CommandHandler("stopemp", stop_monitoring))
+    app.add_handler(CommandHandler("starttalos", start_talos_monitoring))
+    app.add_handler(CommandHandler("stoptalos", stop_talos_monitoring))
+    app.add_handler(CommandHandler("stopall", stop_all_monitoring))
+    
+    # Transaction history commands
+    app.add_handler(CommandHandler("last5", show_last_5_transactions))
+    app.add_handler(CommandHandler("last5talos", show_last_5_talos_transactions))
+    
+    # Testing commands
+    app.add_handler(CommandHandler("test", test_connection))
+    app.add_handler(CommandHandler("testtalos", test_talos_connection))
+    app.add_handler(CommandHandler("status", check_status))
+    
+    # Utility commands
+    app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
+    
+    print("Bot started. Use /startemp in a group to begin EMP transaction monitoring.")
+    print("Use /starttalos in a group to begin Talos transaction monitoring.")
+    
+    # Use polling with drop_pending_updates to avoid conflicts
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main() 
