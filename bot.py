@@ -5,7 +5,7 @@ from web3 import Web3
 
 # Import our modular components
 from config import TOKEN, TARGET_PRICE, IMAGE_PATH, validate_config, get_token_config, get_all_token_keys
-from price_utils import get_emp_price_from_pool, get_btc_price_from_eth, get_return, format_percentage
+from price_utils import get_emp_price_from_pool, get_btc_price_from_eth, get_return, format_percentage, eth_usd
 from transaction_utils import get_last_5_transactions, format_last_5_transactions
 from monitoring import monitor_transactions, monitoring_groups, monitoring_tasks, get_w3_connection, get_monitoring_status
 
@@ -107,24 +107,12 @@ async def send_btc_price(update, context):
 async def send_eth_price(update, context):
     """Send ETH price"""
     print(f"Ξ Command called: /ethprice by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "ids": "ethereum"
-    }
-    
     try:
-        response = requests.get(url, params=params)
-        if response.status_code == 429:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Rate limit exceeded. Please try again in a minute.")
-            return
-            
-        data = response.json()
-        if not data:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch ETH price.")
+        price = eth_usd()
+        if price is None:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Could not fetch ETH price from Etherscan.")
             return
         
-        price = data[0]["current_price"]
         text = f"Ξ Ethereum: ${price:,.2f}"
         
         await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
