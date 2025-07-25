@@ -1,6 +1,6 @@
 import asyncio
 import requests
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from web3 import Web3
 
 # Import our modular components
@@ -8,6 +8,7 @@ from config import TOKEN, TARGET_PRICE, IMAGE_PATH, validate_config, get_token_c
 from price_utils import get_emp_price_from_pool, get_btc_price_from_eth, get_return, format_percentage, eth_usd
 from transaction_utils import get_last_5_transactions, format_last_5_transactions
 from monitoring import monitor_transactions, monitoring_groups, monitoring_tasks, get_w3_connection, get_monitoring_status
+from betting_system import place_bet, get_daily_leaderboard, get_user_stats
 
 # Initialize Web3 connections
 w3_connections = {}
@@ -250,6 +251,11 @@ async def start_talos_monitoring(update, context):
     print(f"🚀 Command called: /starttalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
     await _start_monitoring_generic(update, context, "talos")
 
+async def start_betting_only(update, context):
+    """Start betting-only monitoring for EMP (no transaction messages)"""
+    print(f"🎲 Command called: /bet by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _start_betting_only_generic(update, context, "emp")
+
 async def _start_monitoring_generic(update, context, token_key: str):
     """Generic function to start monitoring for any token"""
     token_config = get_token_config(token_key)
@@ -294,7 +300,76 @@ async def _start_monitoring_generic(update, context, token_key: str):
     )
     
     # Start monitoring in background
-    asyncio.create_task(monitor_transactions(context.bot, token_key, chat_id))
+    asyncio.create_task(monitor_transactions(context.bot, token_key, chat_id, send_transaction_messages=True))
+    
+    # Start daily leaderboard scheduler
+    from betting_system import schedule_daily_leaderboard
+    asyncio.create_task(schedule_daily_leaderboard(context.bot, chat_id))
+
+async def _start_betting_only_generic(update, context, token_key: str):
+    """Generic function to start betting-only monitoring for any token"""
+    token_config = get_token_config(token_key)
+    network = token_config["network"]
+    w3 = get_w3_connection(network)
+    
+    if not w3:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ {network.upper()} RPC URL not configured in .env file\n\n"
+                 f"Please add your {network} endpoint to the .env file:\n"
+                 f"{'INFURA_URL' if network == 'ethereum' else 'ARBITRUM_RPC_URL'}=your_rpc_endpoint"
+        )
+        return
+    
+    # Get the chat ID from where the command was sent
+    chat_id = update.effective_chat.id
+    chat_type = update.effective_chat.type
+    
+    # Check if this is a group chat
+    if chat_type == "private":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ **Please use this command in a group chat!**\n\n"
+                 "Betting system works best in groups where multiple people can participate.\n\n"
+                 "1. Add me to a group\n"
+                 "2. Type /bet in that group"
+        )
+        return
+    
+    # Check if monitoring is already running
+    if token_key in monitoring_tasks:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ {token_config['name']} betting monitoring is already running in this group.\n\n"
+                 f"Use /stopbet to stop betting monitoring."
+        )
+        return
+    
+    # Store the chat ID for betting monitoring
+    monitoring_groups[token_key] = chat_id
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🎲 Starting {token_config['name']} betting system...\n\n"
+             f"📊 Pool: {token_config['pool_address']}\n"
+             f"🌐 Network: {network.title()}\n"
+             f"💬 Group: {chat_id}\n"
+             f"📝 Chat Type: {chat_type}\n\n"
+             "🎯 **Betting-only mode** - No transaction messages will be sent\n"
+             "📈 You'll only see betting rounds and results\n\n"
+             "Commands:\n"
+             "• /leaderboard - View daily leaderboard\n"
+             "• /mystats - View your betting stats\n"
+             "• /stopbet - Stop betting monitoring"
+    )
+    
+    # Start betting-only monitoring in background
+    from monitoring import monitor_transactions
+    asyncio.create_task(monitor_transactions(context.bot, token_key, chat_id, send_transaction_messages=False))
+    
+    # Start daily leaderboard scheduler
+    from betting_system import schedule_daily_leaderboard
+    asyncio.create_task(schedule_daily_leaderboard(context.bot, chat_id))
 
 async def stop_monitoring(update, context):
     """Stop transaction monitoring for EMP"""
@@ -305,6 +380,11 @@ async def stop_talos_monitoring(update, context):
     """Stop transaction monitoring for Talos"""
     print(f"🛑 Command called: /stoptalos by user {update.effective_user.id} in chat {update.effective_chat.id}")
     await _stop_monitoring_generic(update, context, "talos")
+
+async def stop_betting_only(update, context):
+    """Stop betting-only monitoring for EMP"""
+    print(f"🛑 Command called: /stopbet by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    await _stop_betting_only_generic(update, context, "emp")
 
 async def _stop_monitoring_generic(update, context, token_key: str):
     """Generic function to stop monitoring for any token"""
@@ -333,6 +413,36 @@ async def _stop_monitoring_generic(update, context, token_key: str):
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"ℹ️ No active {token_config['name']} monitoring to stop."
+        )
+
+async def _stop_betting_only_generic(update, context, token_key: str):
+    """Generic function to stop betting-only monitoring for any token"""
+    token_config = get_token_config(token_key)
+    
+    if token_key in monitoring_tasks:
+        # Cancel the betting monitoring task
+        task = monitoring_tasks[token_key]
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass  # Expected when cancelling
+        
+        # Remove from monitoring groups
+        if token_key in monitoring_groups:
+            del monitoring_groups[token_key]
+        
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"🛑 {token_config['name']} betting monitoring stopped.\n\n"
+                 f"Use /bet to restart {token_config['name']} betting system."
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"ℹ️ {token_config['name']} betting monitoring is not currently running.\n\n"
+                 f"Use /bet to start {token_config['name']} betting system."
         )
 
 async def stop_all_monitoring(update, context):
@@ -557,6 +667,69 @@ async def handle_wen_commands(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="next week")
 
 # ============================================================================
+# BETTING SYSTEM COMMANDS
+# ============================================================================
+
+async def handle_betting_callback(update, context):
+    """Handle betting button callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    user_id = user.id
+    chat_id = query.message.chat_id
+    
+    print(f"🎲 Betting callback from user {user_id} in chat {chat_id}")
+    
+    # Determine which token this betting round is for
+    # We'll need to store this information in the betting system
+    # For now, let's assume it's for EMP
+    token_key = "emp"
+    
+    if query.data == "bet_higher":
+        success, message = place_bet(token_key, user_id, "higher", user)
+    elif query.data == "bet_lower":
+        success, message = place_bet(token_key, user_id, "lower", user)
+    else:
+        return
+    
+    # Send feedback to user
+    if success:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=message,
+            parse_mode='Markdown'
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"❌ {message}"
+        )
+
+async def show_leaderboard(update, context):
+    """Show daily betting leaderboard"""
+    print(f"📊 Command called: /leaderboard by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    
+    leaderboard = get_daily_leaderboard()
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=leaderboard,
+        parse_mode='Markdown'
+    )
+
+async def show_user_stats(update, context):
+    """Show user's betting stats"""
+    print(f"📊 Command called: /mystats by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    
+    user_id = update.effective_user.id
+    stats = get_user_stats(user_id)
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=stats,
+        parse_mode='Markdown'
+    )
+
+# ============================================================================
 # MAIN APPLICATION SETUP
 # ============================================================================
 
@@ -585,6 +758,8 @@ def main():
     app.add_handler(CommandHandler("starttalos", start_talos_monitoring))
     app.add_handler(CommandHandler("stoptalos", stop_talos_monitoring))
     app.add_handler(CommandHandler("stopall", stop_all_monitoring))
+    app.add_handler(CommandHandler("bet", start_betting_only))
+    app.add_handler(CommandHandler("stopbet", stop_betting_only))
     
     # Transaction history commands
     app.add_handler(CommandHandler("last5", show_last_5_transactions))
@@ -598,8 +773,17 @@ def main():
     # Utility commands
     app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
     
+    # Betting system commands
+    app.add_handler(CommandHandler("leaderboard", show_leaderboard))
+    app.add_handler(CommandHandler("mystats", show_user_stats))
+    
+    # Betting callback handlers
+    app.add_handler(CallbackQueryHandler(handle_betting_callback))
+    
     print("Bot started. Use /startemp in a group to begin EMP transaction monitoring.")
     print("Use /starttalos in a group to begin Talos transaction monitoring.")
+    print("Use /bet in a group to begin betting-only monitoring (no transaction messages).")
+    print("Betting system commands: /leaderboard, /mystats")
     
     # Use polling with drop_pending_updates to avoid conflicts
     app.run_polling(drop_pending_updates=True)

@@ -374,7 +374,7 @@ def process_swap_event(event: Dict, tx_hash: str, token_key: str, w3: Web3) -> T
             f"🔗 **Transaction:** [View TX]({explorer_url}/tx/{tx_hash})"
         )
         
-        return message, direction
+        return message, direction, price_per_token
         
     except Exception as e:
         print(f"❌ CRITICAL ERROR in process_swap_event for {token_key}: {e}")

@@ -1,0 +1,13 @@
+# Copy this to .env file and fill in your values
+
+# Telegram Bot Token (get from @BotFather)
+TOKEN=your_telegram_bot_token_here
+
+# Ethereum RPC URL (Infura, Alchemy, etc.)
+INFURA_URL=https://mainnet.infura.io/v3/your_infura_project_id
+
+# Arbitrum RPC URL (for Talos token)
+ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc
+
+# Etherscan API Key (optional, for fallback API calls)
+ETHERSCAN_API_KEY=your_etherscan_api_key_here 
