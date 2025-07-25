@@ -279,7 +279,7 @@ def get_daily_leaderboard(bot=None) -> str:
             if not username:
                 username = f"User {user_id}"
             
-            leaderboard += f"{emoji} {username}: {stats['daily_points']} point {if stats['daily_points'] == 1: "" else "s"} \n({stats['correct_bets']}/{stats['total_bets']} correct, {accuracy:.1f}%)\n\n"
+            leaderboard += f"{emoji} {username}: {stats['daily_points']} point{'s' if stats['daily_points'] != 1 else ''}\n({stats['correct_bets']}/{stats['total_bets']} correct, {accuracy:.1f}%)\n\n"
     
     leaderboard += "\n📅 Daily stats reset at midnight GMT!"
     
