@@ -1,20 +1,24 @@
-billi - Get $EMP price update with logo and target price
-price - Get detailed $EMP price with market data and 24h changes
-empprice - Get simple $EMP price
-btcprice - Get Bitcoin price
-ethprice - Get Ethereum price
-performance - Compare $EMP, BTC, and ETH 24h performance
-vol - Get daily trading volume for $EMP
-startemp - Start monitoring EMP Uniswap transactions in this group
-bet - Start betting-only monitoring (no transaction messages)
-leaderboard - Show daily betting leaderboard
-mystats - Show your betting stats
+billi - Get current EMP price and market cap
+price - Get detailed price information with percentage changes
+empprice - Get current EMP price
+btcprice - Get current Bitcoin price
+ethprice - Get current Ethereum price
+performance - Compare EMP vs ETH/BTC performance (24h)
+vol - Get 24-hour trading volume
+startemp - Start EMP transaction monitoring (groups only)
 stopemp - Stop EMP transaction monitoring
-stopbet - Stop betting monitoring
-status - Check monitoring status and configuration
-test - Test blockchain connection and EMP pool contract
-last5 - Show last 5 EMP buy/sell transactions with summary
-last5talos - Show last 5 Talos buy/sell transactions with summary
-starttalos - Start monitoring Talos Uniswap transactions in this group
+starttalos - Start Talos transaction monitoring (groups only)
 stoptalos - Stop Talos transaction monitoring
-testtalos - Test blockchain connection and Talos pool contract 
+stopall - Stop all transaction monitoring
+bet - Start betting-only monitoring (no transaction messages)
+stopbet - Stop betting-only monitoring
+buybet - Start buy-only betting (only buys trigger betting)
+stopbuybet - Stop buy-only betting monitoring
+last5 - Show last 5 EMP transactions
+last5talos - Show last 5 Talos transactions
+leaderboard - View daily betting leaderboard
+mystats - View your betting statistics
+test - Test blockchain connection
+testtalos - Test Talos blockchain connection
+status - Check bot status
+testcommand - Test bot functionality

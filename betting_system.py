@@ -173,7 +173,7 @@ def place_bet(token_key: str, user_id: int, choice: str, user) -> Tuple[bool, st
     choice_emoji = "🟢" if choice == "higher" else "🔴"
     choice_text = "HIGHER" if choice == "higher" else "LOWER"
     
-    return True, f"{choice_emoji} You bet on **{choice_text}**!"
+    return True, f"{choice_emoji} **{user_display_name}** bet on **{choice_text}**!"
 
 def resolve_betting_round(token_key: str, new_price: float, bot) -> Optional[str]:
     """Resolve the current betting round and return result message"""

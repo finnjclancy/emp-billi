@@ -270,6 +270,18 @@ async def start_betting_only(update, context):
     
     await _start_betting_only_generic(update, context, "emp")
 
+async def start_buy_betting_only(update, context):
+    """Start buy-only betting monitoring for EMP (no transaction messages, only buys trigger betting)"""
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "Unknown"
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
+    
+    print(f"🟢 Command called: /buybet by user {user_id} ({user_name}) in chat {chat_id} ({chat_title})")
+    print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /buybet command in {chat_title}")
+    
+    await _start_buy_betting_only_generic(update, context, "emp")
+
 async def _start_monitoring_generic(update, context, token_key: str):
     """Generic function to start monitoring for any token"""
     token_config = get_token_config(token_key)
@@ -385,6 +397,57 @@ async def _start_betting_only_generic(update, context, token_key: str):
     from betting_system import schedule_daily_leaderboard
     asyncio.create_task(schedule_daily_leaderboard(context.bot, chat_id))
 
+async def _start_buy_betting_only_generic(update, context, token_key: str):
+    """Generic function to start buy-only betting monitoring for any token"""
+    chat_id = update.effective_chat.id
+    chat_type = update.effective_chat.type
+    
+    # Validate token
+    if token_key not in TOKENS:
+        await update.message.reply_text(f"❌ Unknown token: {token_key}")
+        return
+    
+    token_config = get_token_config(token_key)
+    network = token_config["network"]
+    
+    # Check if it's a group chat
+    if chat_type not in ["group", "supergroup"]:
+        await update.message.reply_text(
+            "❌ This command only works in groups! Add me to a group and try again."
+        )
+        return
+    
+    # Store the group ID for this token
+    if token_key not in active_groups:
+        active_groups[token_key] = set()
+    active_groups[token_key].add(chat_id)
+    
+    # Send confirmation message
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🟢 Starting {token_config['name']} **BUY-ONLY** betting system...\n\n"
+             f"📊 Pool: {token_config['pool_address']}\n"
+             f"🌐 Network: {network.title()}\n"
+             f"💬 Group: {chat_id}\n"
+             f"📝 Chat Type: {chat_type}\n\n"
+             "🎯 **Buy-Only Betting Mode** - No transaction messages will be sent\n"
+             "🟢 **Only BUY transactions trigger betting rounds**\n"
+             "🔴 **SELL transactions are completely ignored**\n"
+             "📈 You'll only see betting rounds and results from buys\n\n"
+             "Commands:\n"
+             "• /leaderboard - View daily leaderboard\n"
+             "• /mystats - View your betting stats\n"
+             "• /stopbuybet - Stop buy-only betting monitoring"
+    )
+    
+    # Start buy-only betting monitoring in background
+    from monitoring import monitor_transactions_buy_only
+    asyncio.create_task(monitor_transactions_buy_only(context.bot, token_key, chat_id))
+    
+    # Start daily leaderboard scheduler
+    from betting_system import schedule_daily_leaderboard
+    asyncio.create_task(schedule_daily_leaderboard(context.bot, chat_id))
+
 async def stop_monitoring(update, context):
     """Stop transaction monitoring for EMP"""
     print(f"🛑 Command called: /stopmonitor by user {update.effective_user.id} in chat {update.effective_chat.id}")
@@ -406,6 +469,18 @@ async def stop_betting_only(update, context):
     print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /stopbet command in {chat_title}")
     
     await _stop_betting_only_generic(update, context, "emp")
+
+async def stop_buy_betting_only(update, context):
+    """Stop buy-only monitoring for EMP"""
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "Unknown"
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
+    
+    print(f"🛑 Command called: /stopbuybet by user {user_id} ({user_name}) in chat {chat_id} ({chat_title})")
+    print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /stopbuybet command in {chat_title}")
+    
+    await _stop_buy_betting_only_generic(update, context, "emp")
 
 async def _stop_monitoring_generic(update, context, token_key: str):
     """Generic function to stop monitoring for any token"""
@@ -464,6 +539,28 @@ async def _stop_betting_only_generic(update, context, token_key: str):
             chat_id=update.effective_chat.id,
             text=f"ℹ️ {token_config['name']} betting monitoring is not currently running.\n\n"
                  f"Use /bet to start {token_config['name']} betting system."
+        )
+
+async def _stop_buy_betting_only_generic(update, context, token_key: str):
+    """Generic function to stop buy-only betting monitoring for any token"""
+    chat_id = update.effective_chat.id
+    token_config = get_token_config(token_key)
+    
+    # Import monitoring groups from monitoring module
+    from monitoring import monitoring_groups
+    
+    if token_key in monitoring_groups and monitoring_groups[token_key] == chat_id:
+        del monitoring_groups[token_key]
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🛑 {token_config['name']} buy-only betting monitoring stopped.\n\n"
+                 f"Use /buybet to restart {token_config['name']} buy-only system."
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"ℹ️ {token_config['name']} buy-only betting monitoring is not currently running.\n\n"
+                 f"Use /buybet to start {token_config['name']} buy-only system."
         )
 
 async def stop_all_monitoring(update, context):
@@ -871,6 +968,8 @@ def main():
     app.add_handler(CommandHandler("stopall", stop_all_monitoring))
     app.add_handler(CommandHandler("bet", start_betting_only))
     app.add_handler(CommandHandler("stopbet", stop_betting_only))
+    app.add_handler(CommandHandler("buybet", start_buy_betting_only))
+    app.add_handler(CommandHandler("stopbuybet", stop_buy_betting_only))
     
     # Transaction history commands
     app.add_handler(CommandHandler("last5", show_last_5_transactions))
@@ -897,7 +996,9 @@ def main():
     print("Bot started. Use /startemp in a group to begin EMP transaction monitoring.")
     print("Use /starttalos in a group to begin Talos transaction monitoring.")
     print("Use /bet in a group to begin betting-only monitoring (no transaction messages).")
+    print("Use /buybet in a group to begin buy-only betting monitoring (only buys trigger betting).")
     print("Betting system commands: /leaderboard, /mystats")
+    print("Stop commands: /stopbet, /stopbuybet")
     
     # Use polling with drop_pending_updates to avoid conflicts
     app.run_polling(drop_pending_updates=True)
