@@ -376,7 +376,7 @@ async def _start_betting_only_generic(update, context, token_key: str):
     
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"🎲 starting $EMP betting\n\n""
+        text=f"🎲 starting $EMP betting\n\n"
              "bet on next transaction being higher or lower\n "
              "get 1 point if your're right\n\n"
              "/leaderboard - View daily leaderboard\n"
