@@ -90,16 +90,32 @@ def eth_usd() -> Optional[float]:
 def get_emp_price_from_pool() -> Optional[float]:
     """
     Get EMP token price using Etherscan API and Uniswap V3 pool contract
+    OPTIMIZED VERSION: Uses hardcoded addresses to minimize API calls
     
     Returns:
         EMP price in USD as float or None if failed
     """
     try:
         api_key = ETHERSCAN_API_KEY
+        if not api_key:
+            print("❌ EMP Price Error: No Etherscan API key configured")
+            return None
+            
         base_url = "https://api.etherscan.io/api"
+        
+        # Hardcoded values for EMP/WETH pool (these never change)
         pool_address = "0xe092769bc1fa5262D4f48353f90890Dcc339BF80"
+        emp_address = "0x39D5313C3750140E5042887413bA8AA6145a9bd2"  # token0 (lower address)
+        weth_address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # token1 (higher address)
+        emp_decimals = 18
+        weth_decimals = 18
+        emp_is_token0 = True  # EMP address < WETH address
+        
+        print(f"🏊 Using EMP/WETH pool: {pool_address}")
+        print(f"📍 EMP (token0): {emp_address}")
+        print(f"📍 WETH (token1): {weth_address}")
 
-        def eth_call(to: str, data: str) -> Optional[str]:
+        def eth_call(to: str, data: str, call_name: str = "unknown") -> Optional[str]:
             params = {
                 'module': 'proxy',
                 'action': 'eth_call',
@@ -108,83 +124,91 @@ def get_emp_price_from_pool() -> Optional[float]:
                 'tag': 'latest',
                 'apikey': api_key
             }
-            r = requests.get(base_url, params=params, timeout=10)
-            if r.status_code == 200:
-                result = r.json().get('result')
-                return result
-            return None
+            try:
+                print(f"🔍 Making API call: {call_name}")
+                r = requests.get(base_url, params=params, timeout=15)
+                
+                if r.status_code != 200:
+                    print(f"❌ {call_name} - HTTP Error {r.status_code}: {r.text[:100]}")
+                    return None
+                
+                response_data = r.json()
+                
+                # Check for API errors in response
+                if 'status' in response_data and response_data['status'] == '0':
+                    error_msg = response_data.get('message', 'Unknown API error')
+                    print(f"❌ {call_name} - API Error: {error_msg}")
+                    if 'rate limit' in error_msg.lower():
+                        print("❌ Rate limit detected - try adding delays between calls")
+                    elif 'invalid api key' in error_msg.lower():
+                        print("❌ Invalid API key - check your ETHERSCAN_API_KEY")
+                    return None
+                
+                result = response_data.get('result')
+                if result:
+                    print(f"✅ {call_name} - Success")
+                    return result
+                else:
+                    print(f"❌ {call_name} - No result in response")
+                    return None
+                    
+            except requests.exceptions.Timeout:
+                print(f"❌ {call_name} - Request timeout (>15 seconds)")
+                return None
+            except requests.exceptions.RequestException as e:
+                print(f"❌ {call_name} - Network error: {e}")
+                return None
+            except Exception as e:
+                print(f"❌ {call_name} - Unexpected error: {e}")
+                return None
 
-        # Get slot0 (price info)
-        slot0_data = eth_call(pool_address, '0x3850c7bd')
+        # STEP 1: Get slot0 (only contract call needed!)
+        print("📊 Step 1/2: Getting pool price data...")
+        slot0_data = eth_call(pool_address, '0x3850c7bd', "Pool slot0")
         if not slot0_data or slot0_data == '0x':
-            print('❌ Failed to get slot0 or empty response')
+            print('❌ Step 1 Failed: Empty slot0 response - pool might be inactive')
             return None
         
         try:
             sqrtPriceX96 = int(slot0_data[2:66], 16)
+            print(f"✅ Step 1 Complete: sqrtPriceX96 = {sqrtPriceX96}")
         except (ValueError, IndexError) as e:
-            print(f'❌ Failed to parse sqrtPriceX96: {e}')
+            print(f'❌ Step 1 Failed: Cannot parse slot0 data: {e}')
+            print(f"Raw slot0 data: {slot0_data}")
             return None
 
-        # Get token addresses
-        token0_addr = eth_call(pool_address, '0x0dfe1681')
-        token1_addr = eth_call(pool_address, '0xd21220a7')
-        if not token0_addr or not token1_addr:
-            print('❌ Failed to get token addresses')
-            return None
-        
-        token0 = '0x' + token0_addr[-40:]
-        token1 = '0x' + token1_addr[-40:]
-
-        # Get decimals
-        token0_dec = eth_call(token0, '0x313ce567')
-        token1_dec = eth_call(token1, '0x313ce567')
-        if not token0_dec or not token1_dec:
-            print('❌ Failed to get decimals')
-            return None
-        
-        token0_decimals = int(token0_dec, 16)
-        token1_decimals = int(token1_dec, 16)
-
-        # Calculate prices with proper decimal handling
-        price_token1_per_token0 = (sqrtPriceX96 / 2**96) ** 2
-        
-        # Adjust for decimals difference
-        decimal_adjustment = 10 ** (token0_decimals - token1_decimals)
-        price_token1_per_token0 *= decimal_adjustment
-        
-        # Determine which token is ETH/WETH
-        weth_addresses = [
-            '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',  # WETH on Ethereum
-            '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',  # WETH on Arbitrum
-        ]
-        
-        token0_is_weth = token0.lower() in [addr.lower() for addr in weth_addresses]
-        token1_is_weth = token1.lower() in [addr.lower() for addr in weth_addresses]
-        
-        # Get ETH price
+        # STEP 2: Get ETH price for USD conversion
+        print("📊 Step 2/2: Getting ETH price for USD conversion...")
         eth_usd_price = eth_usd()
         if not eth_usd_price:
-            print("❌ Failed to get ETH price")
+            print("❌ Step 2 Failed: Could not get ETH price for USD conversion")
             return None
+        print(f"✅ Step 2 Complete: ETH price = ${eth_usd_price}")
+
+        # Calculate price ratio from sqrtPriceX96
+        print("🧮 Calculating price from pool data...")
+        price_token1_per_token0 = (sqrtPriceX96 / 2**96) ** 2
         
-        if token0_is_weth:
-            # WETH is token0, EMP is token1
-            emp_per_weth = price_token1_per_token0  # EMP tokens per 1 WETH
-            emp_usd_price = eth_usd_price / emp_per_weth if emp_per_weth != 0 else 0
-        elif token1_is_weth:
-            # WETH is token1, EMP is token0
-            emp_per_weth = 1 / price_token1_per_token0  # EMP tokens per 1 WETH
-            emp_usd_price = eth_usd_price / emp_per_weth if emp_per_weth != 0 else 0
-        else:
-            print("❌ No WETH found in pool")
-            return None
+        # Since both tokens have 18 decimals, no decimal adjustment needed
+        # price_token1_per_token0 = WETH per EMP (since WETH is token1, EMP is token0)
+        weth_per_emp = price_token1_per_token0
+        emp_per_weth = 1 / weth_per_emp if weth_per_emp != 0 else 0
         
-        print(f"✅ EMP price from pool: ${emp_usd_price:.6f}")
+        print(f"💰 Pool ratio: {weth_per_emp:.10f} WETH per EMP")
+        print(f"💰 Inverse: {emp_per_weth:.6f} EMP per WETH")
+        
+        # Final calculation: EMP price in USD
+        emp_usd_price = eth_usd_price / emp_per_weth if emp_per_weth != 0 else 0
+        
+        print(f"🎉 SUCCESS: EMP price calculated = ${emp_usd_price:.6f}")
+        print(f"⚡ Optimized: Only 2 API calls instead of 6!")
         return emp_usd_price
         
     except Exception as e:
-        print(f"❌ EMP price calculation failed: {e}")
+        print(f"❌ FATAL ERROR in EMP price calculation: {type(e).__name__}: {e}")
+        import traceback
+        print("Full traceback:")
+        traceback.print_exc()
         return None
 
 def get_cached_prices(token_symbol: str = None) -> Tuple[float, float]:
