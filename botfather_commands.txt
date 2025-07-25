@@ -6,7 +6,11 @@ ethprice - Get Ethereum price
 performance - Compare $EMP, BTC, and ETH 24h performance
 vol - Get daily trading volume for $EMP
 startemp - Start monitoring EMP Uniswap transactions in this group
+bet - Start betting-only monitoring (no transaction messages)
+leaderboard - Show daily betting leaderboard
+mystats - Show your betting stats
 stopemp - Stop EMP transaction monitoring
+stopbet - Stop betting monitoring
 status - Check monitoring status and configuration
 test - Test blockchain connection and EMP pool contract
 last5 - Show last 5 EMP buy/sell transactions with summary

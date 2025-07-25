@@ -243,7 +243,14 @@ async def send_daily_volume(update, context):
 
 async def start_monitoring(update, context):
     """Start transaction monitoring for EMP"""
-    print(f"🚀 Command called: /startmonitor by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "Unknown"
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
+    
+    print(f"🚀 Command called: /startemp by user {user_id} ({user_name}) in chat {chat_id} ({chat_title})")
+    print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /startemp command in {chat_title}")
+    
     await _start_monitoring_generic(update, context, "emp")
 
 async def start_talos_monitoring(update, context):
@@ -253,7 +260,14 @@ async def start_talos_monitoring(update, context):
 
 async def start_betting_only(update, context):
     """Start betting-only monitoring for EMP (no transaction messages)"""
-    print(f"🎲 Command called: /bet by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "Unknown"
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
+    
+    print(f"🎲 Command called: /bet by user {user_id} ({user_name}) in chat {chat_id} ({chat_title})")
+    print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /bet command in {chat_title}")
+    
     await _start_betting_only_generic(update, context, "emp")
 
 async def _start_monitoring_generic(update, context, token_key: str):
@@ -383,7 +397,14 @@ async def stop_talos_monitoring(update, context):
 
 async def stop_betting_only(update, context):
     """Stop betting-only monitoring for EMP"""
-    print(f"🛑 Command called: /stopbet by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "Unknown"
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
+    
+    print(f"🛑 Command called: /stopbet by user {user_id} ({user_name}) in chat {chat_id} ({chat_title})")
+    print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /stopbet command in {chat_title}")
+    
     await _stop_betting_only_generic(update, context, "emp")
 
 async def _stop_monitoring_generic(update, context, token_key: str):
@@ -656,14 +677,30 @@ async def check_status(update, context):
         parse_mode='MarkdownV2'
     )
 
+async def test_command(update, context):
+    """Simple test command to verify command handling"""
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "Unknown"
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
+    
+    print(f"🧪 TEST Command called: /testcommand by user {user_id} ({user_name}) in chat {chat_id} ({chat_title})")
+    print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /testcommand in {chat_title}")
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="✅ Test command working! Command handlers are functioning."
+    )
+
 # ============================================================================
 # UTILITY COMMANDS
 # ============================================================================
 
 async def handle_wen_commands(update, context):
     """Handle 'wen' commands"""
-    if "/" in update.message.text and "wen" in update.message.text.lower():
-        print(f"⏰ Command called: /wen by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    # Only handle if it's not a command (doesn't start with /)
+    if not update.message.text.startswith("/") and "wen" in update.message.text.lower():
+        print(f"⏰ Wen command detected by user {update.effective_user.id} in chat {update.effective_chat.id}")
         await context.bot.send_message(chat_id=update.effective_chat.id, text="next week")
 
 # ============================================================================
@@ -708,26 +745,81 @@ async def handle_betting_callback(update, context):
 
 async def show_leaderboard(update, context):
     """Show daily betting leaderboard"""
-    print(f"📊 Command called: /leaderboard by user {update.effective_user.id} in chat {update.effective_chat.id}")
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "Unknown"
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
     
-    leaderboard = get_daily_leaderboard()
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=leaderboard,
-        parse_mode='Markdown'
-    )
+    print(f"📊 Command called: /leaderboard by user {user_id} ({user_name}) in chat {chat_id} ({chat_title})")
+    print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /leaderboard command in {chat_title}")
+    
+    try:
+        print("🔄 Loading betting system data...")
+        from betting_system import load_data
+        load_data()
+        print("✅ Data loaded successfully")
+        
+        print("🔄 Generating leaderboard...")
+        leaderboard = get_daily_leaderboard()
+        print(f"✅ Leaderboard generated: {leaderboard[:100]}...")
+        
+        print("🔄 Sending message to chat...")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=leaderboard,
+            parse_mode='Markdown'
+        )
+        print("✅ Leaderboard sent successfully")
+    except Exception as e:
+        print(f"❌ Error in show_leaderboard: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"❌ Error generating leaderboard: {e}"
+            )
+        except Exception as send_error:
+            print(f"❌ Failed to send error message: {send_error}")
 
 async def show_user_stats(update, context):
     """Show user's betting stats"""
-    print(f"📊 Command called: /mystats by user {update.effective_user.id} in chat {update.effective_chat.id}")
-    
     user_id = update.effective_user.id
-    stats = get_user_stats(user_id)
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=stats,
-        parse_mode='Markdown'
-    )
+    user_name = update.effective_user.first_name or "Unknown"
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or "Private Chat"
+    
+    print(f"📊 Command called: /mystats by user {user_id} ({user_name}) in chat {chat_id} ({chat_title})")
+    print(f"📡 SERVER LOG: User {user_name} (ID: {user_id}) called /mystats command in {chat_title}")
+    
+    try:
+        print("🔄 Loading betting system data...")
+        from betting_system import load_data
+        load_data()
+        print("✅ Data loaded successfully")
+        
+        print(f"🔄 Getting stats for user {user_id}...")
+        stats = get_user_stats(user_id)
+        print(f"✅ Stats generated: {stats[:100]}...")
+        
+        print("🔄 Sending message to chat...")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=stats,
+            parse_mode='Markdown'
+        )
+        print("✅ Stats sent successfully")
+    except Exception as e:
+        print(f"❌ Error in show_user_stats: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"❌ Error generating stats: {e}"
+            )
+        except Exception as send_error:
+            print(f"❌ Failed to send error message: {send_error}")
 
 # ============================================================================
 # MAIN APPLICATION SETUP
@@ -769,13 +861,16 @@ def main():
     app.add_handler(CommandHandler("test", test_connection))
     app.add_handler(CommandHandler("testtalos", test_talos_connection))
     app.add_handler(CommandHandler("status", check_status))
-    
-    # Utility commands
-    app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
+    app.add_handler(CommandHandler("testcommand", test_command))
     
     # Betting system commands
+    print("🔧 Registering betting system commands...")
     app.add_handler(CommandHandler("leaderboard", show_leaderboard))
     app.add_handler(CommandHandler("mystats", show_user_stats))
+    print("✅ Betting system commands registered")
+    
+    # Utility commands (must be last to avoid intercepting commands)
+    app.add_handler(MessageHandler(filters.TEXT, handle_wen_commands))
     
     # Betting callback handlers
     app.add_handler(CallbackQueryHandler(handle_betting_callback))
