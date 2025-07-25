@@ -378,8 +378,8 @@ async def _start_betting_only_generic(update, context, token_key: str):
         chat_id=chat_id,
         text=f"🎲 starting $EMP betting 🎲\n\n"
              "bet on next transaction\n\n"
-             "/leaderboard\n- view daily leaderboard\n"
-             "/mystats\n- see your stats\n"
+             "/leaderboard\n- view daily leaderboard\n\n"
+             "/mystats\n- see your stats\n\n"
              "/stopbet\n- stop betting monitoring"
     )
     
