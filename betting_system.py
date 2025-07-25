@@ -136,10 +136,9 @@ def start_new_betting_round(token_key: str, price: float, chat_id: int, bot):
     
     # Create betting message
     message = (
-        f"🎲 **NEW BETTING ROUND** 🎲\n\n"
-        f"Current Price: **${price:,.4f}**\n\n"
-        f"Will the next transaction price be:\n\n"
-        f"Click to place your bet!"
+        f"🎲 **new betting round**\n"
+        f"current price: **${price:,.4f}**\n"
+        f"place your bets"
     )
     
     keyboard = create_betting_keyboard()
@@ -157,7 +156,8 @@ def place_bet(token_key: str, user_id: int, choice: str, user) -> Tuple[bool, st
     
     # Check if user already bet
     if user_id_str in active_bets[token_key]["bets"]:
-        return False, "You've already placed a bet for this round!"
+        user_display_name = get_user_display_name(user)
+        return False, f"{user_display_name} tried to bet again"
     
     # Record the bet with user info
     user_display_name = get_user_display_name(user)
@@ -285,19 +285,26 @@ def get_daily_leaderboard(bot=None) -> str:
     
     return leaderboard
 
-def get_user_stats(user_id: int) -> str:
+def get_user_stats(user_id: int, user_display_name: str = None) -> str:
     """Get stats for a specific user"""
     reset_daily_stats()
     
     user_id_str = str(user_id)
     if user_id_str not in user_stats:
-        return "📊 **YOUR STATS** 📊\n\nNo bets placed yet!"
+        display_name = user_display_name or f"User {user_id}"
+        return f"📊 **{display_name} stats** 📊\n\nNo bets placed yet!"
     
     stats = user_stats[user_id_str]
     accuracy = (stats["correct_bets"] / stats["total_bets"] * 100) if stats["total_bets"] > 0 else 0
     
+    # Use provided display name or try to get stored username
+    if user_display_name:
+        display_name = user_display_name
+    else:
+        display_name = stats.get("username", f"User {user_id}")
+    
     return (
-        f"📊 **YOUR STATS** 📊\n\n"
+        f"📊 **{display_name} stats** 📊\n\n"
         f"🎯 Daily Points: {stats['daily_points']}\n"
         f"📈 Total Bets: {stats['total_bets']}\n"
         f"✅ Correct Bets: {stats['correct_bets']}\n"

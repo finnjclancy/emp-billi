@@ -910,12 +910,15 @@ async def show_user_stats(update, context):
     
     try:
         print("🔄 Loading betting system data...")
-        from betting_system import load_data
+        from betting_system import load_data, get_user_display_name
         load_data()
         print("✅ Data loaded successfully")
         
         print(f"🔄 Getting stats for user {user_id}...")
-        stats = get_user_stats(user_id)
+        # Get user display name for the stats
+        user = update.effective_user
+        user_display_name = get_user_display_name(user)
+        stats = get_user_stats(user_id, user_display_name)
         print(f"✅ Stats generated: {stats[:100]}...")
         
         print("🔄 Sending message to chat...")
