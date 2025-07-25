@@ -638,12 +638,31 @@ async def check_status(update, context):
     status_text = "📊 **Monitoring Status**\n\n"
     
     # Check Web3 connections
-    for network, connection_info in status["web3_connections"].items():
-        if connection_info["connected"]:
-            status_text += f"✅ **{network.title()} Connected**\n"
-            status_text += f"📦 Latest Block: {connection_info['latest_block']:,}\n"
-        else:
-            status_text += f"❌ **{network.title()} Error**: {connection_info['error']}\n"
+    from monitoring import get_w3_connection
+    
+    # Test Ethereum connection
+    eth_w3 = get_w3_connection("ethereum")
+    if eth_w3:
+        try:
+            latest_block = eth_w3.eth.block_number
+            status_text += f"✅ **Ethereum Connected**\n"
+            status_text += f"📦 Latest Block: {latest_block:,}\n"
+        except Exception as e:
+            status_text += f"❌ **Ethereum Error**: {str(e)}\n"
+    else:
+        status_text += f"❌ **Ethereum**: No connection configured\n"
+    
+    # Test Arbitrum connection
+    arb_w3 = get_w3_connection("arbitrum")
+    if arb_w3:
+        try:
+            latest_block = arb_w3.eth.block_number
+            status_text += f"✅ **Arbitrum Connected**\n"
+            status_text += f"📦 Latest Block: {latest_block:,}\n"
+        except Exception as e:
+            status_text += f"❌ **Arbitrum Error**: {str(e)}\n"
+    else:
+        status_text += f"❌ **Arbitrum**: No connection configured\n"
     
     # Check monitoring status for each token
     for token_key in get_all_token_keys():
@@ -760,7 +779,7 @@ async def show_leaderboard(update, context):
         print("✅ Data loaded successfully")
         
         print("🔄 Generating leaderboard...")
-        leaderboard = get_daily_leaderboard()
+        leaderboard = get_daily_leaderboard(context.bot)
         print(f"✅ Leaderboard generated: {leaderboard[:100]}...")
         
         print("🔄 Sending message to chat...")

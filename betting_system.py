@@ -81,7 +81,7 @@ def reset_daily_stats():
             user_stats[user_id]["last_reset_date"] = current_date
             user_stats[user_id]["daily_points"] = 0
 
-def award_points_to_user(user_id: str, points: int = 1):
+def award_points_to_user(user_id: str, points: int = 1, username: str = None):
     """Award points to a user"""
     global user_stats
     
@@ -91,14 +91,17 @@ def award_points_to_user(user_id: str, points: int = 1):
             "daily_points": 0,
             "total_bets": 0,
             "correct_bets": 0,
-            "last_reset_date": get_current_gmt_date()
+            "last_reset_date": get_current_gmt_date(),
+            "username": username or f"User {user_id}"
         }
+    elif username and "username" not in user_stats[user_id_str]:
+        user_stats[user_id_str]["username"] = username
     
     user_stats[user_id_str]["daily_points"] += points
     user_stats[user_id_str]["correct_bets"] += 1
     user_stats[user_id_str]["total_bets"] += 1
 
-def record_bet_for_user(user_id: str):
+def record_bet_for_user(user_id: str, username: str = None):
     """Record that a user placed a bet (for total_bets tracking)"""
     global user_stats
     
@@ -108,8 +111,11 @@ def record_bet_for_user(user_id: str):
             "daily_points": 0,
             "total_bets": 0,
             "correct_bets": 0,
-            "last_reset_date": get_current_gmt_date()
+            "last_reset_date": get_current_gmt_date(),
+            "username": username or f"User {user_id}"
         }
+    elif username and "username" not in user_stats[user_id_str]:
+        user_stats[user_id_str]["username"] = username
     
     user_stats[user_id_str]["total_bets"] += 1
 
@@ -159,7 +165,7 @@ def place_bet(token_key: str, user_id: int, choice: str, user) -> Tuple[bool, st
         "choice": choice,
         "display_name": user_display_name
     }
-    record_bet_for_user(user_id)
+    record_bet_for_user(user_id, user_display_name)
     
     # Save data
     save_data()
@@ -200,7 +206,7 @@ def resolve_betting_round(token_key: str, new_price: float, bot) -> Optional[str
         
         if choice == winning_choice:
             winners.append(display_name)
-            award_points_to_user(user_id_str)
+            award_points_to_user(user_id_str, username=display_name)
         else:
             losers.append(display_name)
     
@@ -235,7 +241,7 @@ def resolve_betting_round(token_key: str, new_price: float, bot) -> Optional[str
     
     return result_message
 
-def get_daily_leaderboard() -> str:
+def get_daily_leaderboard(bot=None) -> str:
     """Get the current daily leaderboard"""
     reset_daily_stats()
     
@@ -255,7 +261,25 @@ def get_daily_leaderboard() -> str:
         if stats["daily_points"] > 0:
             emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏆"
             accuracy = (stats["correct_bets"] / stats["total_bets"] * 100) if stats["total_bets"] > 0 else 0
-            leaderboard += f"{emoji} User {user_id}: {stats['daily_points']} points ({stats['correct_bets']}/{stats['total_bets']} correct, {accuracy:.1f}%)\n"
+            
+            # Try to get username from stored data first
+            username = stats.get("username", None)
+            
+            # If no username stored, try to get it from active bets
+            if not username:
+                for token_key, bet_data in active_bets.items():
+                    if user_id in bet_data["bets"]:
+                        username = bet_data["bets"][user_id]["display_name"]
+                        # Update the stored data with the username
+                        user_stats[user_id]["username"] = username
+                        save_data()
+                        break
+            
+            # If still no username, use user ID
+            if not username:
+                username = f"User {user_id}"
+            
+            leaderboard += f"{emoji} {username}: {stats['daily_points']} points ({stats['correct_bets']}/{stats['total_bets']} correct, {accuracy:.1f}%)\n"
     
     leaderboard += "\n📅 Daily stats reset at midnight GMT!"
     
