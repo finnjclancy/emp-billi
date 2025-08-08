@@ -312,28 +312,7 @@ def get_user_stats(user_id: int, user_display_name: str = None) -> str:
         f"📅 Daily stats reset at midnight GMT!"
     )
 
-async def send_daily_leaderboard(bot, chat_id: int):
-    """Send daily leaderboard and reset stats"""
-    leaderboard = get_daily_leaderboard()
-    await bot.send_message(chat_id=chat_id, text=leaderboard, parse_mode='Markdown')
-
-async def schedule_daily_leaderboard(bot, chat_id: int):
-    """Schedule daily leaderboard to be sent at midnight GMT"""
-    while True:
-        now = datetime.now(timezone.utc)
-        # Calculate time until next midnight GMT
-        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        seconds_until_midnight = (tomorrow - now).total_seconds()
-        
-        # Wait until midnight
-        await asyncio.sleep(seconds_until_midnight)
-        
-        # Send leaderboard
-        try:
-            await send_daily_leaderboard(bot, chat_id)
-            print(f"📊 Daily leaderboard sent to chat {chat_id}")
-        except Exception as e:
-            print(f"❌ Error sending daily leaderboard: {e}")
+ 
 
 # Load data on module import
 load_data() 

@@ -328,9 +328,6 @@ async def _start_monitoring_generic(update, context, token_key: str):
     # Start monitoring in background
     asyncio.create_task(monitor_transactions(context.bot, token_key, chat_id, send_transaction_messages=True))
     
-    # Start daily leaderboard scheduler
-    from betting_system import schedule_daily_leaderboard
-    asyncio.create_task(schedule_daily_leaderboard(context.bot, chat_id))
 
 async def _start_betting_only_generic(update, context, token_key: str):
     """Generic function to start betting-only monitoring for any token"""
@@ -387,9 +384,6 @@ async def _start_betting_only_generic(update, context, token_key: str):
     from monitoring import monitor_transactions
     asyncio.create_task(monitor_transactions(context.bot, token_key, chat_id, send_transaction_messages=False))
     
-    # Start daily leaderboard scheduler
-    from betting_system import schedule_daily_leaderboard
-    asyncio.create_task(schedule_daily_leaderboard(context.bot, chat_id))
 
 async def _start_buy_betting_only_generic(update, context, token_key: str):
     """Generic function to start buy-only betting monitoring for any token"""
@@ -438,9 +432,6 @@ async def _start_buy_betting_only_generic(update, context, token_key: str):
     from monitoring import monitor_transactions_buy_only
     asyncio.create_task(monitor_transactions_buy_only(context.bot, token_key, chat_id))
     
-    # Start daily leaderboard scheduler
-    from betting_system import schedule_daily_leaderboard
-    asyncio.create_task(schedule_daily_leaderboard(context.bot, chat_id))
 
 async def stop_monitoring(update, context):
     """Stop transaction monitoring for EMP"""

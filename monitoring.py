@@ -3,7 +3,7 @@ from typing import Dict, Optional
 from web3 import Web3
 from config import get_token_config, UNISWAP_POOL_ABI
 from transaction_utils import process_swap_event, get_transaction_details, get_logs_via_etherscan, processed_transactions
-from betting_system import start_new_betting_round, resolve_betting_round, schedule_daily_leaderboard
+from betting_system import start_new_betting_round, resolve_betting_round
 import os
 
 # Store the group chat IDs when monitoring starts

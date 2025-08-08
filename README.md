@@ -29,7 +29,7 @@ The bot now includes a betting system where users can bet on whether the next tr
 2. Users click "HIGHER" or "LOWER" buttons to place their bets
 3. When the next transaction arrives, the bot announces winners and losers
 4. Winners get 1 point per correct bet
-5. Daily leaderboard is posted at midnight GMT
+5. view the daily leaderboard anytime with `/leaderboard` (stats reset at midnight gmt)
 
 ### Betting Commands:
 - `/leaderboard` - Show current daily standings
